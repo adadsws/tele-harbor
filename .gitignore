@@ -1,0 +1,27 @@
+# 本机 Python 环境及账号会话不得进入版本库。
+.venv/
+.venv-browser/
+__pycache__/
+*.pyc
+*.session
+*.session-journal
+.local/
+# 每台电脑的群组与数据路径，不提交或发布。
+/config/config.local.json
+/~archive/*-groups-config-*/config/config.local.json
+/~archive/2026-10-29-215317-groups-config-92ab6b1b/.local/tests/groups-save-probe-4151279de53c47e685582dc1695d9ab6.json
+/~archive/2026-10-29-215725-groups-config-08bd2435/groups.json
+/~archive/2026-10-29-groups-save-probe-ff6a7129/.local/tests/groups-save-probe-4151279de53c47e685582dc1695d9ab6.json
+/~archive/2026-10-31-152603-groups-config-f879380f/groups.json
+/~archive/2026-11-01-230052-local-config/groups.json
+# 可由运行重新生成的过程与交付输出不进入本地 Git。
+~outputs-intermediate/
+~outputs-final/
+~temp/
+# 兼容手动指定项目内下载目录时的本机数据。
+downloads/
+downloaded/
+downloading/
+/.downloads.telegg-partials/
+/.downloaded.telegg-partials/
+/.downloaded.telegg-staging/

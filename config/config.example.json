@@ -1,0 +1,9 @@
+{
+  "groups": [],
+  "output": "downloads/downloaded",
+  "staging": "downloads/downloading",
+  "partials": "downloads/downloading/partials",
+  "chrome_profile": "downloads/state/chrome-profile",
+  "scan_records": "downloads/state/scan-records",
+  "test_artifacts": "downloads/state/tests"
+}
