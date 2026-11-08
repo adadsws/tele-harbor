@@ -1,4 +1,4 @@
-"""将分片持久写入输出目录旁，核验完整后才原子移动到正式目录。"""
+"""持久保存分片和提交日志，核验完整后才移动到正式文件。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,38 @@ from typing import Awaitable, Callable
 
 CHUNK_SIZE = 1024 * 1024
 LEGACY_CHUNK_SIZE = 256 * 1024
+
+
+def verified_completed_file(path: Path, journal: Path, *, peer: str, mid: str) -> tuple[int, str]:
+    """断在结果登记前时，用完整分片提交日志核验已入库文件。"""
+    lines = journal.read_text(encoding='utf-8').splitlines()
+    if not lines:
+        raise RuntimeError('缺少已提交分片记录')
+    header = json.loads(lines[0])
+    identity = header.get('identity', {})
+    size, chunk_size = header.get('size'), header.get('chunk_size')
+    if (header.get('kind') != 'identity' or not isinstance(identity, dict)
+            or str(identity.get('peer')) != peer or str(identity.get('mid')) != mid
+            or not isinstance(size, int) or size <= 0
+            or chunk_size not in (LEGACY_CHUNK_SIZE, CHUNK_SIZE)
+            or path.stat().st_size != size):
+        raise RuntimeError('已入库文件与分片身份或大小不符')
+    offset = 0
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for line in lines[1:]:
+            event = json.loads(line)
+            length = min(chunk_size, size - offset)
+            data = stream.read(length)
+            if (offset >= size or event.get('kind') != 'chunk' or event.get('offset') != offset
+                    or event.get('length') != length or len(data) != length
+                    or hashlib.sha256(data).hexdigest() != event.get('sha256')):
+                raise RuntimeError('已入库文件与分片提交记录不符')
+            digest.update(data)
+            offset += length
+    if offset != size:
+        raise RuntimeError('已入库文件的分片提交记录未覆盖全部字节')
+    return size, digest.hexdigest()
 
 
 def _sync(stream) -> None:

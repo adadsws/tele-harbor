@@ -8,18 +8,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from playwright.async_api import async_playwright
+from playwright.async_api import TimeoutError as BrowserTimeout, async_playwright
 
 from telegg.browser import (BUBBLE, MediaTask, discover_media, existing_media_index,
                             is_transport_timeout,
-                            locate_message, media_targets, open_group,
+                            locate_message, media_targets, open_group, open_group_from_chatlist,
                             publish_ready_staged_groups, save_media, save_one,
                             save_media_with_recovery, visible_messages)
 from telegg.content_types import classify, validate_types
 from telegg.content_archive import (content_payload, prepare_group_folder,
-                                    prepare_item_folders, save_message_content)
+                                    prepare_item_folders, save_message_content,
+                                    save_text_file)
 from telegg.layout import Message, grouped, destination, group_folder, previous_group_folder
 from telegg.local_config import load_paths
+from telegg.errors import LocalDataError
+from telegg.browser import iter_history, ScanProgress
 
 TEST_ROOT = load_paths()['test_artifacts']
 
@@ -75,18 +78,48 @@ window.mtprotoMessagePort = {getMessageByPeer(peer, mid) {
 
 
 class BrowserTests(unittest.TestCase):
+    def test_download_scan_uses_server_dates_without_reading_dom_cache(self):
+        item = Message('4294967400', 'fixture', 1793680677, 0,
+                       (('4294967400', 'fixture', 1793680677, False),))
+        page = MagicMock()
+        progress = ScanProgress()
+        async def scan():
+            return [entry async for entry in iter_history(
+                page, None, set(), progress, peer_id=-1, api_scan=True)]
+        with (patch('telegg.browser.server_history_with_recovery',
+                    new_callable=AsyncMock, side_effect=[[item], []]) as history,
+              patch('telegg.browser.visible_messages', new_callable=AsyncMock) as dom):
+            self.assertEqual(asyncio.run(scan()), [item])
+            self.assertEqual(history.call_args_list[0].args[2], 1 << 32)
+            dom.assert_not_called()
+            self.assertTrue(progress.reached_oldest)
+
+    def test_media_positions_follow_source_ids_when_dom_order_changes(self):
+        item = Message('41', '', 1700000000, 2,
+                       (('41', '', 1700000000, True), ('42', '', 1700000001, True)),
+                       (('41', 'document'), ('42', 'document')))
+        targets = MagicMock()
+        targets.count = AsyncMock(return_value=2)
+        targets.nth.side_effect = lambda index: index
+        with (patch('telegg.browser.locate_message', new_callable=AsyncMock),
+              patch('telegg.browser.media_targets', new_callable=AsyncMock, return_value=targets),
+              patch('telegg.browser.task_metadata', new_callable=AsyncMock,
+                    side_effect=[('42', 3), ('41', 3)])):
+            found = asyncio.run(discover_media(None, 'https://web.telegram.org/k/#-1', item))
+        self.assertEqual({entry.media_mid: entry.index for entry in found}, {'41': 1, '42': 2})
+
     def test_changed_media_identity_creates_numbered_file_version(self):
         base = TEST_ROOT / f'media-edited-{uuid.uuid4().hex}'
         folder, partials = base / 'output', base / 'partials'
         folder.mkdir(parents=True)
         partials.mkdir(parents=True)
-        old = folder / 'm42_1_file.bin'
+        old = folder / 'm42_1_777_file.bin'
         old.write_bytes(b'old')
-        source = {'peer': '-1', 'mid': '42', 'kind': 'document', 'id': 'new',
+        source = {'peer': '-1', 'mid': '42', 'kind': 'document', 'id': '778',
                   'dc': 1, 'thumb': '', 'size': 4, 'name': 'file.bin',
                   'mime_type': 'application/octet-stream'}
         original_identity = {key: source[key] for key in ('peer', 'mid', 'kind', 'id', 'dc', 'thumb')}
-        original_identity['id'] = 'old'
+        original_identity['id'] = '777'
         (partials / '42.jsonl').write_text(json.dumps({
             'kind': 'identity', 'identity': original_identity, 'size': 3,
         }) + '\n', encoding='utf-8')
@@ -96,7 +129,7 @@ class BrowserTests(unittest.TestCase):
 
         def finish(path):
             path.write_bytes(b'new!')
-            return 4, 'digest'
+            return 4, '0' * 64
 
         partial.finalize.side_effect = finish
         with (patch('telegg.browser.resume_source', new_callable=AsyncMock, return_value=source),
@@ -104,8 +137,8 @@ class BrowserTests(unittest.TestCase):
               patch('telegg.browser.download_parts', new_callable=AsyncMock)):
             state, final, *_ = asyncio.run(save_one(None, None, task, {'42': [old]}))
         self.assertEqual(state, 'downloaded')
-        self.assertEqual((folder / 'm42_1_file.v1.bin').read_bytes(), b'old')
-        self.assertEqual(final.name, 'm42_1_file.v2.bin')
+        self.assertEqual((folder / 'm42_1_777_file.v1.bin').read_bytes(), b'old')
+        self.assertEqual(final.name, '2023-11-15-m42_1_778_file.v2.bin')
         self.assertEqual(final.read_bytes(), b'new!')
         self.assertEqual(partial_type.call_args.args[1], '42.v2')
         self.assertEqual(existing_media_index(folder), {'42': [final]})
@@ -119,7 +152,7 @@ class BrowserTests(unittest.TestCase):
             moved_position = MediaTask(task.message, 2, '42', folder, 4, partials)
             with self.assertRaisesRegex(RuntimeError, '附件位置变化'):
                 asyncio.run(save_one(None, None, moved_position, existing_media_index(folder)))
-        self.assertEqual(len(list(folder.glob('m42_1_*'))), 2)
+        self.assertEqual(len(list(folder.iterdir())), 2)
 
     def test_transport_timeout_reopens_download_page_and_retries_same_media(self):
         scan = MagicMock()
@@ -129,6 +162,7 @@ class BrowserTests(unittest.TestCase):
         timeout = RuntimeError('分片偏移 1024 连续失败：Error: timeout')
         self.assertTrue(is_transport_timeout(timeout))
         self.assertFalse(is_transport_timeout(RuntimeError('续传身份或大小已变化')))
+        self.assertFalse(is_transport_timeout(LocalDataError('本地路径含分片偏移连续失败timeout')))
         with (patch('telegg.browser.open_group', new_callable=AsyncMock),
               patch('telegg.browser.save_media', new_callable=AsyncMock,
                     side_effect=[timeout, ('downloaded', None)]) as save):
@@ -215,16 +249,24 @@ class BrowserTests(unittest.TestCase):
                           (('101', 'document'), ('102', 'document')))
         record = SimpleNamespace(history_complete=True, ordered_messages=lambda: [message],
                                  results={'101': {'status': 'downloaded'},
-                                          '102': {'status': 'downloaded'}}, media={})
+                                          '102': {'status': 'downloaded'}}, media={},
+                                 source_messages={'101': {'content_type': 'document'},
+                                                  '102': {'content_type': 'document'}},
+                                 content_files={})
         pending = staging / group_folder(message)
         pending.mkdir(parents=True)
-        (pending / 'm101_1_a.bin').write_bytes(b'a')
+        (pending / '2023-11-15-m101_1_701.bin').write_bytes(b'a')
         self.assertEqual(publish_ready_staged_groups(root, staging, record), 0)
         self.assertTrue(pending.is_dir())
-        (pending / 'm102_1_b.bin').write_bytes(b'b')
+        (pending / '2023-11-15-m102_1_702.bin').write_bytes(b'b')
+        self.assertEqual(publish_ready_staged_groups(root, staging, record), 0)
+        for mid in ('101', '102'):
+            content = base / f'{mid}.json'
+            content.write_bytes(b'{}')
+            record.content_files[mid] = str(content)
         self.assertEqual(publish_ready_staged_groups(root, staging, record), 1)
-        self.assertTrue((root / group_folder(message) / 'm102_1_b.bin').is_file())
-        self.assertEqual((root / group_folder(message) / '完整文字.txt').read_text(encoding='utf-8'), message.text)
+        self.assertTrue((root / group_folder(message) / '2023-11-15-m102_1_702.bin').is_file())
+        self.assertFalse(pending.exists())
 
     def test_long_text_migrates_old_folder_and_saves_exact_text(self):
         base = TEST_ROOT / f'text-folder-{uuid.uuid4().hex}'
@@ -232,25 +274,23 @@ class BrowserTests(unittest.TestCase):
         old = base / '2023-11-15-一二三四五六七八九十甲乙丙丁戊己庚辛壬癸 完整文字 [m42]'
         old.mkdir(parents=True)
         (old / 'm42_1_a.bin').write_bytes(b'a')
-        folder = prepare_group_folder(base, anchor, create=True)
-        self.assertEqual(folder.name, '[2023-11-15_m42] 一二三四五六七八九十甲乙丙丁戊己庚辛壬癸++')
-        self.assertTrue((folder / 'm42_1_a.bin').is_file())
-        self.assertEqual((folder / '完整文字.txt').read_text(encoding='utf-8'), anchor.text)
-        self.assertEqual(prepare_group_folder(base, anchor, create=True), folder)
+        with self.assertRaisesRegex(RuntimeError, '旧目录不能整体迁移'):
+            prepare_group_folder(base, anchor, create=True)
+        self.assertTrue((old / 'm42_1_a.bin').is_file())
+        self.assertFalse((base / group_folder(anchor)).exists())
 
     def test_edited_full_text_uses_numbered_versions(self):
         base = TEST_ROOT / f'text-edited-{uuid.uuid4().hex}'
         original = Message('42', 'abcdefghijklmnopqrst-old', 1700000000, 0)
         edited = Message('42', 'abcdefghijklmnopqrst-new', 1700000000, 0)
         folder = prepare_group_folder(base, original, create=True)
-        self.assertEqual(prepare_group_folder(base, edited, create=True), folder)
-        self.assertFalse((folder / '完整文字.txt').exists())
-        self.assertEqual((folder / '完整文字.v1.txt').read_text(encoding='utf-8'), original.text)
-        self.assertEqual((folder / '完整文字.v2.txt').read_text(encoding='utf-8'), edited.text)
-        prepare_group_folder(base, edited, create=True)
-        self.assertEqual(len(list(folder.glob('完整文字.v*.txt'))), 2)
-        prepare_group_folder(base, original, create=True)
-        self.assertEqual((folder / '完整文字.v3.txt').read_text(encoding='utf-8'), original.text)
+        first = save_text_file(folder, original.parts[0] if original.parts else
+                               (original.mid, original.text, original.timestamp, False))
+        second = save_text_file(folder, edited.parts[0] if edited.parts else
+                                (edited.mid, edited.text, edited.timestamp, False))
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.read_text(encoding='utf-8'), original.text)
+        self.assertEqual(second.read_text(encoding='utf-8'), edited.text)
 
     def test_ten_character_folder_migrates_to_full_text_when_at_most_twenty(self):
         base = TEST_ROOT / f'text-twenty-{uuid.uuid4().hex}'
@@ -258,10 +298,9 @@ class BrowserTests(unittest.TestCase):
         old = base / previous_group_folder(anchor)
         old.mkdir(parents=True)
         (old / 'm42_1_a.bin').write_bytes(b'a')
-        folder = prepare_group_folder(base, anchor, create=True)
-        self.assertEqual(folder.name, '[2023-11-15_m42] abcdefghijklmnop')
-        self.assertTrue((folder / 'm42_1_a.bin').is_file())
-        self.assertFalse((folder / '完整文字.txt').exists())
+        with self.assertRaisesRegex(RuntimeError, '旧目录不能整体迁移'):
+            prepare_group_folder(base, anchor, create=True)
+        self.assertTrue((old / 'm42_1_a.bin').is_file())
 
     def test_text_folder_conflict_does_not_overwrite(self):
         base = TEST_ROOT / f'text-conflict-{uuid.uuid4().hex}'
@@ -270,7 +309,7 @@ class BrowserTests(unittest.TestCase):
         old.mkdir(parents=True)
         new = base / group_folder(anchor)
         new.mkdir()
-        with self.assertRaisesRegex(RuntimeError, '冲突'):
+        with self.assertRaisesRegex(RuntimeError, '旧目录不能整体迁移'):
             prepare_group_folder(base, anchor, create=True)
         self.assertTrue(old.is_dir())
         self.assertTrue(new.is_dir())
@@ -283,8 +322,9 @@ class BrowserTests(unittest.TestCase):
         old = group / '2023-11-15 06-13-19 [m41]'
         old.mkdir(parents=True)
         (old / 'm41_1_a.bin').write_bytes(b'a')
-        self.assertEqual(prepare_item_folders(group, [item, anchor]), 1)
-        self.assertTrue((group / '2023-11-15_m41' / 'm41_1_a.bin').is_file())
+        with self.assertRaisesRegex(RuntimeError, '旧消息子目录不能整体迁移'):
+            prepare_item_folders(group, [item, anchor])
+        self.assertTrue((old / 'm41_1_a.bin').is_file())
 
     def test_content_type_categories(self):
         self.assertEqual(classify('messageMediaDocument', ('documentAttributeVideo',)), 'video')
@@ -356,6 +396,71 @@ class BrowserTests(unittest.TestCase):
             self.assertEqual(asyncio.run(open_group(page, target)), '真实群名')
         self.assertEqual([call.args[0] for call in page.goto.await_args_list], ['about:blank', target])
 
+    def test_open_group_keeps_already_visible_chat(self):
+        target = 'https://web.telegram.org/k/#-1000000005'
+        page = MagicMock()
+        page.url = target
+        page.goto = AsyncMock()
+        page.wait_for_function = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+        bubble = MagicMock()
+        bubble.count = AsyncMock(return_value=1)
+        bubble.wait_for = AsyncMock()
+        title = MagicMock()
+        title.count = AsyncMock(return_value=1)
+        title.inner_text = AsyncMock(return_value='已打开的群组')
+        page.locator.side_effect = lambda selector: bubble if selector.startswith(BUBBLE) else title
+        bubble.first = bubble
+        title.first = title
+        self.assertEqual(asyncio.run(open_group(page, target)), '已打开的群组')
+        page.goto.assert_not_awaited()
+
+    def test_chatlist_fallback_searches_peer_title_and_clicks(self):
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.evaluate = AsyncMock(return_value='目标群组')
+        target = MagicMock()
+        target.count = AsyncMock(return_value=0)
+        target.wait_for = AsyncMock()
+        target.click = AsyncMock()
+        search = MagicMock()
+        search.fill = AsyncMock()
+        bubble = MagicMock()
+        bubble.wait_for = AsyncMock()
+        target.first = target
+        search.first = search
+        bubble.first = bubble
+        page.locator.side_effect = lambda selector: (target if selector.startswith('#column-left')
+                                                    else search if selector == '.input-search-input'
+                                                    else bubble)
+        with patch('telegg.browser.wait_for_login', new_callable=AsyncMock):
+            asyncio.run(open_group_from_chatlist(page, '-1000000005'))
+        search.fill.assert_awaited_once_with('目标群组')
+        target.click.assert_awaited_once()
+        bubble.wait_for.assert_awaited_once()
+
+    def test_open_group_recovers_empty_deep_link(self):
+        target = 'https://web.telegram.org/k/#-1000000005'
+        page = MagicMock()
+        page.url = 'https://web.telegram.org/k/'
+        async def goto(url, **_kwargs):
+            page.url = url
+        page.goto = AsyncMock(side_effect=goto)
+        page.wait_for_function = AsyncMock()
+        page.wait_for_timeout = AsyncMock()
+        bubble = MagicMock()
+        bubble.wait_for = AsyncMock(side_effect=BrowserTimeout('empty route'))
+        title = MagicMock()
+        title.count = AsyncMock(return_value=1)
+        title.inner_text = AsyncMock(return_value='目标群组')
+        bubble.first = bubble
+        title.first = title
+        page.locator.side_effect = lambda selector: bubble if selector.startswith(BUBBLE) else title
+        with (patch('telegg.browser.wait_for_login', new_callable=AsyncMock),
+              patch('telegg.browser.open_group_from_chatlist', new_callable=AsyncMock) as recover):
+            self.assertEqual(asyncio.run(open_group(page, target)), '目标群组')
+        recover.assert_awaited_once_with(page, '-1000000005')
+
     def test_visible_chrome_fixture(self):
         async def check():
             async with async_playwright() as playwright:
@@ -399,13 +504,13 @@ class BrowserTests(unittest.TestCase):
                                              ('102', '', 1700000001, True)),
                                             (('101', 'document'), ('102', 'document')))
                     recovered = await discover_media(page, 'https://web.telegram.org/k/#-1', partial_album)
-                    self.assertEqual([(m.media_mid, m.index) for m in recovered], [('101', 1), ('102', 3)])
+                    self.assertEqual([(m.media_mid, m.index) for m in recovered], [('101', 1), ('102', 2)])
                     cached_root = TEST_ROOT / uuid.uuid4().hex
-                    cached_task = MediaTask(partial_album, 3, '102', cached_root, 3,
+                    cached_task = MediaTask(partial_album, 2, '102', cached_root, 3,
                                             cached_root / '.partials')
                     self.assertEqual((await save_media(page, 'https://web.telegram.org/k/#-1',
                                                        cached_task, {}))[0], 'downloaded')
-                    self.assertEqual(next(cached_root.glob('m102_3_*.bin')).read_bytes(), b'abc')
+                    self.assertEqual(next(cached_root.glob('*-m102_2_*.bin')).read_bytes(), b'abc')
                     await page.set_content(TEXT_CASE_HTML)
                     text_cases = await visible_messages(page)
                     self.assertEqual([message.text for message in text_cases],
@@ -415,7 +520,7 @@ class BrowserTests(unittest.TestCase):
                     self.assertEqual([await doc_targets.nth(i).evaluate('n => n.closest("[data-mid]").dataset.mid')
                                       for i in range(await doc_targets.count())], ['107', '108'])
                     self.assertEqual([[message.mid for message in batch] for _, batch in grouped(text_cases)],
-                                     [['101', '102'], ['103'], ['104'], ['107']])
+                                     [['101', '102', '103', '104', '107']])
                     await page.set_content('''<div id="column-center"><div class="bubble" data-mid="201" data-peer-id="-1">
                       <div class="attachment"><div class="new-attachment-box">file</div></div></div></div>
                       <script>window.mtprotoMessagePort={getMessageByPeer(peer,mid){return {mid,date:1700000201,
@@ -426,6 +531,16 @@ class BrowserTests(unittest.TestCase):
                     await page.set_content(TEXT_CASE_HTML)
                     await page.evaluate('delete window.mtprotoMessagePort')
                     with self.assertRaises(RuntimeError):
+                        await visible_messages(page)
+                    await page.set_content('''
+                    <div id="column-center"><div class="bubble" data-mid="201" data-peer-id="-1">
+                      <div class="album-item" data-mid="201" data-peer-id="-1"><div class="media-container"></div></div>
+                      <div class="album-item" data-mid="202" data-peer-id="-1"><div class="media-container"></div></div>
+                    </div></div>
+                    <script>window.mtprotoMessagePort={getMessageByPeer(peer,mid){return {
+                      mid,date:mid===201?1700000201:1700000190,message:'',
+                      media:{_: 'messageMediaPhoto'}}}}</script>''')
+                    with self.assertRaisesRegex(RuntimeError, '时间顺序异常'):
                         await visible_messages(page)
                 finally:
                     await context.close()

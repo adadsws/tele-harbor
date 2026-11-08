@@ -99,8 +99,10 @@ def save_groups(path: Path, groups: list[ConfiguredGroup]) -> None:
 
 def choose_groups(groups: list[ConfiguredGroup], save: Callable[[list[ConfiguredGroup]], None],
                   read: Callable[[str], str] = input,
-                  names: dict[str, str] | None = None) -> list[str] | None:
-    """参考 leak 项目的数字循环输入：单组、全部、增加、移除和退出。"""
+                  names: dict[str, str] | None = None,
+                  verify_mode: str = 'fast',
+                  on_verify_change: Callable[[str], None] | None = None) -> list[str] | None:
+    """数字菜单：单组、全部、增删、一个校验模式开关和退出。"""
     def answer(prompt: str) -> str:
         try:
             return read(prompt).strip()
@@ -126,6 +128,9 @@ def choose_groups(groups: list[ConfiguredGroup], save: Callable[[list[Configured
         print(f'  {add_number}. 新增群组', flush=True)
         if remove_number is not None:
             print(f'  {remove_number}. 移除群组', flush=True)
+        toggle_number = (remove_number + 1) if remove_number is not None else (add_number + 1)
+        mode_label = '快速模式' if verify_mode == 'fast' else '逐文件检查模式'
+        print(f'  {toggle_number}. 切换模式（当前：{mode_label}）', flush=True)
         print('  0. 退出', flush=True)
         choice = answer('请输入数字选择：')
         if choice == '0' or choice.casefold() in EXIT_INPUTS:
@@ -137,6 +142,12 @@ def choose_groups(groups: list[ConfiguredGroup], save: Callable[[list[Configured
         if groups and choice == str(all_number):
             print(f'已选择全部 {len(groups)} 个群组', flush=True)
             return [item.url for item in groups]
+        if choice == str(toggle_number):
+            verify_mode = 'exact' if verify_mode == 'fast' else 'fast'
+            if on_verify_change:
+                on_verify_change(verify_mode)
+            print(f'已切换为：{"快速模式" if verify_mode == "fast" else "逐文件检查模式"}', flush=True)
+            continue
         if choice == str(add_number):
             while True:
                 value = answer('输入群组号或 Telegram Web K 链接（0 返回，q 退出）：')

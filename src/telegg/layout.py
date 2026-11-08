@@ -22,6 +22,11 @@ class Message:
     parts: tuple[tuple[str, str, int, bool], ...] = ()
     content_types: tuple[tuple[str, str], ...] = ()
     content_details: tuple[tuple[str, str], ...] = ()
+    reply_targets: tuple[tuple[str, str], ...] = ()
+    album_id: str = ''
+    sender_id: str = ''
+    outgoing: bool = False
+    post_author: str = ''
 
 
 def group_id(url: str) -> str:
@@ -54,10 +59,10 @@ def message_time(message: Message) -> datetime:
 
 
 def group_folder(message: Message) -> str:
-    date = message_time(message).strftime("%Y-%m-%d")
-    label = (f'{safe_name(message.text[:20], 20)}++' if len(message.text) > 20
-             else safe_name(message.text, 20))
-    return f"[{date}_m{message.mid}] {label}"
+    """头像段以段内最旧原消息命名，不从正文推断分组。"""
+    source = min(((_mid, timestamp) for _mid, _text, timestamp, _media in message.parts),
+                 key=lambda value: (value[1], int(value[0])), default=(message.mid, message.timestamp))
+    return f'[From_{datetime.fromtimestamp(source[1], CHINA_TIME):%Y-%m-%d}-m{source[0]}]'
 
 
 def previous_group_folder(message: Message) -> str:
@@ -90,21 +95,38 @@ def old_item_folder(message: Message) -> str:
 
 
 def grouped(messages: list[Message]) -> list[tuple[Message | None, list[Message]]]:
-    """输入旧到新消息；无文字消息归于下一条有文字消息。"""
+    """按 Web K 头像段规则由旧到新归组；相册本身是不可拆单元。"""
     batches: list[tuple[Message | None, list[Message]]] = []
     pending: list[Message] = []
     for message in messages:
-        pending.append(message)
-        if message.text.strip():
-            batches.append((message, pending))
+        if pending and not same_avatar_group(pending[-1], message):
+            batches.append((pending[0], pending))
             pending = []
+        pending.append(message)
     if pending:
-        batches.append((None, pending))
+        batches.append((pending[0], pending))
     return batches
+
+
+def same_avatar_group(older: Message, newer: Message) -> bool:
+    """Web K 普通群头像段：同发送者、同日、相邻发送时间最多相隔 121 秒。"""
+    # 规则依据：Telegram Web K src/components/chat/bubbleGroups.ts 的 canItemsBeGrouped。
+    # https://github.com/morethanwords/tweb/blob/master/src/components/chat/bubbleGroups.ts
+    return (bool(older.sender_id) and older.sender_id == newer.sender_id
+            and older.outgoing == newer.outgoing
+            and older.post_author == newer.post_author
+            and message_time(older).date() == message_time(newer).date()
+            and abs(newer.timestamp - older.timestamp) <= 121)
 
 
 def destination(root: Path, anchor: Message | None, batch: list[Message], item: Message) -> Path:
     if anchor is None:
         return root / "未归组"
-    parent = root / group_folder(anchor)
-    return parent / item_folder(item) if len(batch) > 1 else parent
+    segment = root / group_folder(anchor)
+    if not item.album_id:
+        return segment
+    oldest = min(((mid, timestamp) for mid, _text, timestamp, _media in item.parts),
+                 key=lambda value: (value[1], int(value[0])),
+                 default=(item.mid, item.timestamp))
+    day = datetime.fromtimestamp(oldest[1], CHINA_TIME).strftime('%Y-%m-%d')
+    return segment / f'{day}-g{item.album_id}'

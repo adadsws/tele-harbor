@@ -54,6 +54,21 @@ class GroupMenuTests(unittest.TestCase):
         self.assertEqual(self.menu(['4'])[0], [FIRST, SECOND, THIRD])
         self.assertIsNone(self.menu(['0'])[0])
 
+    def test_one_numeric_option_toggles_only_two_modes(self):
+        groups = [ConfiguredGroup('-1000000005'), ConfiguredGroup('-1000000003'),
+                  ConfiguredGroup('-1000000004')]
+        changed = []
+        answers = iter(['7', '7', '7', '1'])
+        output = io.StringIO()
+        with redirect_stdout(output):
+            selected = choose_groups(groups, lambda _items: None,
+                                     lambda _prompt: next(answers),
+                                     on_verify_change=changed.append)
+        self.assertEqual(selected, [FIRST])
+        self.assertEqual(changed, ['exact', 'fast', 'exact'])
+        self.assertIn('7. 切换模式（当前：快速模式）', output.getvalue())
+        self.assertIn('7. 切换模式（当前：逐文件检查模式）', output.getvalue())
+
     def test_live_names_appear_without_changing_group_ids(self):
         groups = [ConfiguredGroup('-1000000005'), ConfiguredGroup('-1000000003')]
         output = io.StringIO()
@@ -134,7 +149,6 @@ class GroupMenuTests(unittest.TestCase):
             with (patch('telegg.__main__.arguments', return_value=args),
                   patch('telegg.__main__.load_paths', return_value={'chrome_profile': Path(directory)}),
                   patch('telegg.__main__.async_playwright', return_value=manager),
-                  patch('telegg.__main__.show_chrome_window'),
                   patch('telegg.__main__.wait_for_login', new_callable=AsyncMock),
                   patch('telegg.__main__.open_group', new_callable=AsyncMock, return_value='群名'),
                   patch('telegg.__main__.choose_groups', side_effect=[[FIRST], None]) as menu,

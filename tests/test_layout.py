@@ -8,14 +8,15 @@ from telegg.layout import Message, destination, group_folder, group_id, group_ro
 
 
 class LayoutTests(unittest.TestCase):
-    def test_long_group_text_uses_twenty_characters_and_suffix(self):
+    def test_group_folder_ignores_text(self):
         short = Message('10', 'abcdefghijklmnopqrst', 1700000000, 1)
         long = Message('11', 'abcdefghijklmnopqrstu', 1700000000, 1)
-        self.assertEqual(group_folder(short), '[2023-11-15_m10] abcdefghijklmnopqrst')
-        self.assertEqual(group_folder(long), '[2023-11-15_m11] abcdefghijklmnopqrst++')
+        self.assertEqual(group_folder(short), '[From_2023-11-15-m10]')
+        self.assertEqual(group_folder(long), '[From_2023-11-15-m11]')
 
     def test_requested_groups(self):
-        messages = [Message(str(i), text, 1700000000 + i, 1) for i, text in enumerate(
+        messages = [Message(str(i), text, 1700000000 + i, 1,
+                            sender_id=('a' if i <= 2 else 'b' if i == 3 else 'c')) for i, text in enumerate(
             ['', '文字2', '文字3', '', '', '', '文字7'], 1
         )]
         groups = grouped(messages)
@@ -25,23 +26,29 @@ class LayoutTests(unittest.TestCase):
         first = destination(root, *groups[0], messages[0])
         second = destination(root, *groups[0], messages[1])
         single = destination(root, *groups[1], messages[2])
-        self.assertEqual(first.parent, second.parent)
-        self.assertEqual(first.name, item_folder(messages[0]))
-        self.assertEqual(second.name, item_folder(messages[1]))
-        self.assertEqual(single.name, '[2023-11-15_m3] 文字3')
-        self.assertEqual(first.name, '2023-11-15_m1')
+        self.assertEqual(first, second)
+        self.assertEqual(first.name, group_folder(messages[0]))
+        self.assertEqual(single.name, '[From_2023-11-15-m3]')
+
+    def test_album_caption_uses_caption_source_mid_after_entire_album(self):
+        album = Message('244', '#第44期', 1793121479, 10,
+                        tuple((str(mid), '#第44期' if mid == 251 else '',
+                               1793121479 + mid - 244, True)
+                              for mid in range(244, 254)))
+        self.assertEqual(group_folder(album), '[From_2026-10-28-m244]')
 
     def test_same_second_and_trailing(self):
-        messages = [Message('4', '', 1700000000, 1), Message('5', '', 1700000000, 1)]
+        messages = [Message('4', '', 1700000000, 1, sender_id='same'),
+                    Message('5', '', 1700000000, 1, sender_id='same')]
         anchor, batch = grouped(messages)[0]
-        self.assertIsNone(anchor)
+        self.assertEqual(anchor.mid, '4')
         self.assertNotEqual(item_folder(messages[0]), item_folder(messages[1]))
-        self.assertEqual(destination(Path('out'), anchor, batch, messages[0]), Path('out/未归组'))
-        self.assertEqual(destination(Path('out'), anchor, batch, messages[1]), Path('out/未归组'))
+        self.assertEqual(destination(Path('out'), anchor, batch, messages[0]), Path('out/[From_2023-11-15-m4]'))
+        self.assertEqual(destination(Path('out'), anchor, batch, messages[1]), Path('out/[From_2023-11-15-m4]'))
         single_anchor, single_batch = grouped(messages[:1])[0]
-        self.assertIsNone(single_anchor)
+        self.assertEqual(single_anchor.mid, '4')
         self.assertEqual(destination(Path('out'), single_anchor, single_batch, messages[0]),
-                         Path('out/未归组'))
+                         Path('out/[From_2023-11-15-m4]'))
 
     def test_urls(self):
         self.assertEqual(group_id('https://web.telegram.org/k/#-1000000005'), '-1000000005')

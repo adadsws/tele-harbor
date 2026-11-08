@@ -6,7 +6,8 @@ import unittest
 import uuid
 from pathlib import Path
 
-from telegg.resumable import CHUNK_SIZE, LEGACY_CHUNK_SIZE, PartialFile, download_parts
+from telegg.resumable import (CHUNK_SIZE, LEGACY_CHUNK_SIZE, PartialFile,
+                              download_parts, verified_completed_file)
 from telegg.local_config import load_paths
 
 TEST_ROOT = load_paths()['test_artifacts']
@@ -51,6 +52,23 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(final.read_bytes(), self.content)
         self.assertEqual(len(digest), 64)
         self.assertFalse(second.payload.exists())
+
+    def test_completed_file_recovery_verifies_every_committed_chunk(self):
+        partial = self.partial()
+
+        async def fetch(offset, limit):
+            return self.content[offset:offset + limit]
+
+        asyncio.run(download_parts(partial, fetch))
+        final = self.root / 'downloads' / 'file.bin'
+        size, digest = partial.finalize(final)
+        self.assertEqual(verified_completed_file(final, partial.journal,
+                                                 peer='-1', mid='42'), (size, digest))
+        with final.open('r+b') as stream:
+            stream.seek(CHUNK_SIZE + 1)
+            stream.write(b'X')
+        with self.assertRaisesRegex(RuntimeError, '分片提交记录不符'):
+            verified_completed_file(final, partial.journal, peer='-1', mid='42')
 
     def test_uncommitted_tail_is_compared_with_source_before_resume(self):
         partial = self.partial()

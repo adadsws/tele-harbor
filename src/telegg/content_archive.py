@@ -1,4 +1,4 @@
-"""把每条原消息的文字与非文件内容保存为可复核的本地 JSON。"""
+"""保存原消息 TXT、非文件内容 JSON 与头像段清单。"""
 
 from __future__ import annotations
 
@@ -8,44 +8,13 @@ import re
 from pathlib import Path
 
 from .content_types import DOWNLOADABLE, METADATA_ONLY
-from .layout import (Message, group_folder, item_folder, legacy_group_folder,
+from .layout import (CHINA_TIME, Message, group_folder, legacy_group_folder,
                      old_group_folder, old_item_folder, previous_group_folder)
-
-
-def save_full_text(folder: Path, text: str) -> Path:
-    """同一消息正文变化时顺序保留版本；重复运行复用最新版本。"""
-    encoded = text.encode('utf-8')
-    plain = folder / '完整文字.txt'
-    versions = []
-    for path in folder.glob('完整文字.v*.txt'):
-        match = re.fullmatch(r'完整文字\.v([1-9]\d*)\.txt', path.name)
-        if not match or not path.is_file():
-            raise RuntimeError(f'完整文字版本文件异常：{path}')
-        versions.append((int(match.group(1)), path))
-    versions.sort()
-    if versions:
-        if plain.exists() or [number for number, _ in versions] != list(range(1, len(versions) + 1)):
-            raise RuntimeError(f'完整文字版本序列冲突：{folder}')
-        latest = versions[-1][1]
-        if latest.read_bytes() == encoded:
-            return latest
-        destination = folder / f'完整文字.v{len(versions) + 1}.txt'
-    elif plain.exists():
-        if not plain.is_file():
-            raise RuntimeError(f'完整文字路径不是文件：{plain}')
-        if plain.read_bytes() == encoded:
-            return plain
-        plain.rename(folder / '完整文字.v1.txt')
-        destination = folder / '完整文字.v2.txt'
-    else:
-        destination = plain
-    with destination.open('xb') as stream:
-        stream.write(encoded)
-    return destination
+from datetime import datetime
 
 
 def prepare_group_folder(root: Path, anchor: Message | None, *, create: bool = False) -> Path:
-    """迁移旧目录并保存全文；同编号编辑时按 v1、v2 递增。"""
+    """准备头像段目录；旧标题目录只从复用区按媒体 ID 搬回。"""
     if anchor is None:
         return root / '未归组'
     folder = root / group_folder(anchor)
@@ -57,32 +26,80 @@ def prepare_group_folder(root: Path, anchor: Message | None, *, create: bool = F
         raise RuntimeError(f'编组目录超出指定根目录：{root}')
     present = [old for old in olds if old.exists()]
     if present:
-        if len(present) != 1 or folder.exists() or not present[0].is_dir():
-            raise RuntimeError(f'旧目录与新目录冲突，未覆盖：{present} -> {folder}')
-        present[0].rename(folder)
-    if create and len(anchor.text) > 20:
+        raise RuntimeError(f'旧目录不能整体迁移；请仅逐文件复用已下载媒体：{present}')
+    if create:
         folder.mkdir(parents=True, exist_ok=True)
-        save_full_text(folder, anchor.text)
     return folder
 
 
+def save_text_file(folder: Path, part: tuple[str, str, int, bool]) -> Path | None:
+    """将原消息文字写为普通 TXT；相同编号编辑时不覆盖旧版。"""
+    mid, text, timestamp, _has_media = part
+    if not text:
+        return None
+    from .layout import safe_name
+    day = datetime.fromtimestamp(timestamp, CHINA_TIME).strftime('%Y-%m-%d')
+    path = folder / f'{day}-m{mid}_{safe_name(text[:30], 30)}.txt'
+    encoded = text.encode('utf-8')
+    versions = sorted((int(match.group(1)), old) for old in folder.glob(f'{path.stem}.v*.txt')
+                      if (match := re.fullmatch(re.escape(path.stem) + r'\.v([1-9]\d*)\.txt', old.name)))
+    if versions:
+        if path.exists() or [number for number, _ in versions] != list(range(1, len(versions) + 1)):
+            raise RuntimeError(f'文字文件版本冲突：{path}')
+        if versions[-1][1].read_bytes() == encoded:
+            return versions[-1][1]
+        path = folder / f'{path.stem}.v{len(versions) + 1}.txt'
+    elif path.is_file():
+        if path.read_bytes() == encoded:
+            return path
+        path.rename(folder / f'{path.stem}.v1.txt')
+        path = folder / f'{path.stem}.v2.txt'
+    elif path.exists():
+        raise RuntimeError(f'文字文件路径不是文件：{path}')
+    folder.mkdir(parents=True, exist_ok=True)
+    with path.open('xb') as stream:
+        stream.write(encoded)
+    return path
+
+
+def save_group_manifest(folder: Path, batch: list[Message]) -> Path:
+    """顺序记录头像段中各相册 ID 和原消息 ID，不保存正文。"""
+    rows = [{'grouped_id': item.album_id or None,
+             'message_ids': [part[0] for part in item.parts] or [item.mid]}
+            for item in batch]
+    encoded = (json.dumps({'items': rows}, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    path = folder / '段内清单.json'
+    if path.is_file():
+        current = path.read_bytes()
+        if current == encoded:
+            return path
+        previous_ids = {mid for row in json.loads(current)['items'] for mid in row['message_ids']}
+        next_ids = {mid for row in rows for mid in row['message_ids']}
+        if previous_ids - next_ids:
+            raise RuntimeError('头像段清单缩小，拒绝覆盖；需重新确认完整头像段')
+        versions = [int(match.group(1)) for old in folder.glob('段内清单.v*.json')
+                    if (match := re.fullmatch(r'段内清单\.v([1-9]\d*)\.json', old.name))]
+        archived = folder / f'段内清单.v{max(versions, default=0) + 1}.json'
+        path.rename(archived)
+    if path.exists():
+        raise RuntimeError(f'组清单路径不是文件：{path}')
+    folder.mkdir(parents=True, exist_ok=True)
+    with path.open('xb') as stream:
+        stream.write(encoded)
+    return path
+
+
 def prepare_item_folders(folder: Path, batch: list[Message]) -> int:
-    """多消息编组的旧时间子目录改为日期和消息 ID。"""
+    """禁止旧消息子目录迁移；重建只按媒体 ID 逐文件复用。"""
     if len(batch) <= 1 or not folder.is_dir():
         return 0
     moved = 0
     base = folder.resolve()
     for item in batch:
         old = folder / old_item_folder(item)
-        new = folder / item_folder(item)
         if not old.exists():
             continue
-        if (not old.resolve().is_relative_to(base) or
-                not new.resolve().is_relative_to(base) or
-                not old.is_dir() or new.exists()):
-            raise RuntimeError(f'消息子目录冲突，未覆盖：{old} -> {new}')
-        old.rename(new)
-        moved += 1
+        raise RuntimeError(f'旧消息子目录不能整体迁移：{old}')
     return moved
 
 
