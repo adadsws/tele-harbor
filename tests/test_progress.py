@@ -123,7 +123,7 @@ class ProgressTests(unittest.TestCase):
 
     def test_existing_file_rechecks_browser_identity(self):
         task = MediaTask(Message('1', '正文', 1700000001, 1), 1,
-                         '101', Path('unused/文件'), None)
+                         '101', TEST_ROOT / 'identity-check-output', None)
         existing = MagicMock()
         existing.is_file.return_value = True
         target = MagicMock()

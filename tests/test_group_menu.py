@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from telegg.browser import download_group
 from telegg.group_menu import ConfiguredGroup, choose_groups, load_groups, parse_groups
 from telegg.__main__ import run
+from telegg.local_config import load_paths
 
 
 FIRST = 'https://web.telegram.org/k/#-1000000005'
@@ -128,7 +129,7 @@ class GroupMenuTests(unittest.TestCase):
         with (patch('telegg.browser.open_group', new_callable=AsyncMock, return_value='实际群名'),
               patch('telegg.browser.iter_history', side_effect=empty_history),
               redirect_stdout(io.StringIO())):
-            result = asyncio.run(download_group(None, NEW, Path('unused'), None, True,
+            result = asyncio.run(download_group(None, NEW, load_paths()['test_artifacts'] / 'menu-output', None, True,
                                                 on_group_open=titles.append))
         self.assertEqual(result, (0, 0, 0, 0))
         self.assertEqual(titles, ['实际群名'])

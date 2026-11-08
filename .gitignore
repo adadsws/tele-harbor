@@ -16,3 +16,6 @@ __pycache__/
 /.downloads.telegg-partials/
 /.downloaded.telegg-partials/
 /.downloaded.telegg-staging/
+
+# Tool-local pytest cache.
+/.pytest_cache/

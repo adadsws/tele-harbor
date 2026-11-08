@@ -1,9 +1,9 @@
 {
   "groups": [],
-  "output": "downloads/downloaded",
-  "staging": "downloads/downloading",
-  "partials": "downloads/downloading/partials",
-  "chrome_profile": "downloads/state/chrome-profile",
-  "scan_records": "downloads/state/scan-records",
-  "test_artifacts": "downloads/state/tests"
+  "output": "~outputs-final/downloaded",
+  "staging": "~outputs-intermediate/telegram/groups",
+  "partials": "~outputs-intermediate/telegram/partials",
+  "chrome_profile": "~temp/telegram/chrome-profile",
+  "scan_records": "~outputs-intermediate/telegram/scan-records",
+  "test_artifacts": "~temp/tests"
 }

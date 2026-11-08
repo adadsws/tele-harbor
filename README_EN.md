@@ -13,6 +13,8 @@ Download and organize files and text from Telegram groups on Windows. Supports m
 
 Messages are processed from newest to oldest. Run the program again after an interruption to continue. Files and text are organized by group.
 
+The example configuration saves downloads in `~outputs-final/downloaded` by default.
+
 ## Two modes
 
 - Fast mode (default): skip completed items and continue unfinished downloads.
