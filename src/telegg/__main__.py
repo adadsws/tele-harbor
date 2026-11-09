@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import time
 from contextlib import suppress
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as BrowserTimeout
 
-from .browser import audit_messages, download_group, open_group, wait_for_login
+from .browser import (audit_messages, download_group, open_group, wait_for_login,
+                       DownloadTransportUnavailable)
 from .diagnostics import detail, failure, log_location, start_log
 from .errors import LocalDataError
 from .group_menu import GROUPS_FILE, choose_groups, load_groups, save_groups
@@ -129,6 +131,8 @@ async def run(argv: list[str] | None = None) -> int:
                         total_messages += count
                         total_downloaded += done
                         total_existing += skipped
+                        detail(f'GROUP_RESULT index={group_number} messages={count} '
+                               f'downloaded={done} existing={skipped} failed={failed}')
                         print(f'[群组 {group_number}/{len(groups)} 完成] 已处理原消息 {count}，'
                               f'新下载 {done}，已有 {skipped}，失败 {failed}，'
                               f'耗时 {time.monotonic() - group_started:.1f} 秒', flush=True)
@@ -154,8 +158,30 @@ def report_group_error(exc: Exception, number: int, total: int, url: str) -> Non
     failure(f'群组 {number}/{total} {group_id(url)} 失败')
     if isinstance(exc, LocalDataError):
         print(f'[本地数据错误] {exc}；已停止本群，未自动修复。', file=sys.stderr, flush=True)
+    elif isinstance(exc, DownloadTransportUnavailable):
+        print(f'[下载连接中断] {exc}', file=sys.stderr, flush=True)
+    elif isinstance(exc, BrowserTimeout):
+        print('[页面超时] Telegram 页面或目标群组未能及时就绪；本群已停止，已有文件和断点保留。',
+              file=sys.stderr, flush=True)
     print(f'[群组 {number}/{total} 失败] 处理未完成，详情见 {log_location()}',
           file=sys.stderr, flush=True)
+
+
+def run_exit_status() -> tuple[int, str]:
+    """记录所有可处理的退出；窗口被强制结束时不伪造正常结束记录。"""
+    try:
+        code = asyncio.run(run())
+        return code, 'incomplete' if code else 'completed'
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else int(bool(exc.code))
+        return code, 'cli'
+    except (KeyboardInterrupt, EOFError):
+        print('已中断', file=sys.stderr)
+        return 130, 'interrupted'
+    except Exception:
+        failure('启动失败')
+        print(f'启动失败，请查看 {log_location()}', file=sys.stderr)
+        return 1, 'error'
 
 
 def main() -> None:
@@ -163,15 +189,10 @@ def main() -> None:
         if hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     start_log()
-    try:
-        raise SystemExit(asyncio.run(run()))
-    except (KeyboardInterrupt, EOFError):
-        print('已中断', file=sys.stderr)
-        raise SystemExit(130) from None
-    except Exception as exc:
-        failure('启动失败')
-        print(f'启动失败，请查看 {log_location()}', file=sys.stderr)
-        raise SystemExit(1) from None
+    detail(f'RUN_START pid={os.getpid()}')
+    code, reason = run_exit_status()
+    detail(f'RUN_EXIT pid={os.getpid()} code={code} reason={reason}')
+    raise SystemExit(code)
 
 
 if __name__ == '__main__':

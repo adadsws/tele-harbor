@@ -14,17 +14,128 @@ from telegg.browser import (BUBBLE, MediaTask, discover_media, existing_media_in
                             is_transport_timeout,
                             locate_message, media_targets, open_group, open_group_from_chatlist,
                             publish_ready_staged_groups, save_media, save_one,
-                            save_media_with_recovery, visible_messages)
+                            save_media_with_recovery, visible_messages, wait_for_login)
 from telegg.content_types import classify, validate_types
 from telegg.content_archive import (content_payload, prepare_group_folder,
                                     prepare_item_folders, save_message_content,
                                     save_text_file)
-from telegg.layout import Message, grouped, destination, group_folder, previous_group_folder
+from telegg.layout import Message, grouped, destination, group_folder, previous_group_folder, group_root
 from telegg.local_config import load_paths
 from telegg.errors import LocalDataError
 from telegg.browser import iter_history, ScanProgress
 
 TEST_ROOT = load_paths()['test_artifacts']
+
+
+class PublicationFailureTests(unittest.TestCase):
+    def test_timed_out_part_collects_late_driver_failure_without_committing_it(self):
+        from telegg.browser import fetch_resume_part
+
+        async def scenario():
+            release, finished = asyncio.Event(), asyncio.Event()
+            errors = []
+            loop = asyncio.get_running_loop()
+            loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+            async def late_driver(*_args):
+                await release.wait()
+                finished.set()
+                raise RuntimeError('synthetic late driver failure')
+
+            with patch('telegg.browser._fetch_resume_part', side_effect=late_driver):
+                outer = asyncio.create_task(fetch_resume_part(None, {}, 0, 1024))
+                await asyncio.sleep(0)
+                outer.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await outer
+                release.set()
+                await asyncio.wait_for(finished.wait(), timeout=1)
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+            self.assertEqual(errors, [])
+
+        asyncio.run(scenario())
+
+    def test_later_history_failure_does_not_leave_published_source_directories(self):
+        """模拟后续扫描失败：已发布头像段须在整轮结束前收尾。"""
+        from telegg.browser import download_group
+        base = TEST_ROOT / f'publish-before-failure-{uuid.uuid4().hex}'
+        output, staging = base / 'output', base / 'staging'
+        rows = [Message(str(mid), 'fixture', 1700000000 + mid * 300, 0,
+                        ((str(mid), 'fixture', 1700000000 + mid * 300, False),),
+                        ((str(mid), 'text'),)) for mid in (303, 302, 301)]
+
+        async def history(*_args, **_kwargs):
+            for row in rows:
+                yield row
+            raise RuntimeError('synthetic later history failure')
+
+        paths = {'output': output, 'staging': staging, 'partials': base / 'partials',
+                 'scan_records': base / 'records'}
+        with (patch('telegg.browser.load_paths', return_value=paths),
+              patch('telegg.browser.SCAN_RECORD_ROOT', paths['scan_records']),
+              patch('telegg.browser.open_group', new_callable=AsyncMock, return_value='fixture'),
+              patch('telegg.browser.iter_history', side_effect=history),
+              self.assertRaisesRegex(RuntimeError, 'synthetic later history failure')):
+            asyncio.run(download_group(None, 'https://web.telegram.org/k/#-1000000005',
+                                       output, None, False, coarse_skip=False))
+        root = group_root(output, 'fixture', '-1000000005')
+        self.assertTrue((root / group_folder(rows[0]) / '段内清单.json').is_file())
+        self.assertFalse((staging / root.name / group_folder(rows[0])).exists())
+
+
+class SessionEntryTests(unittest.TestCase):
+    def test_part_timeout_collects_real_browser_rejection(self):
+        from telegg.browser import fetch_resume_part, _PENDING_PART_READS
+
+        async def scenario():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(channel='chrome', headless=False)
+                try:
+                    page = await browser.new_page()
+                    await page.set_content('''<script>
+                    window.__teleggServerMedia = new Map([['42', {media: {document: {
+                        _: 'document', id: '777', dc_id: 4, file_reference: []
+                    }}}]]);
+                    window.appDownloadManager = {managers: {
+                        apiManager: {invokeApi() {return new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('fixture late failure')), 50));}},
+                        apiFileManager: {async requestFilePart() {throw new Error('fixture fallback failure');}}
+                    }};
+                    </script>''')
+                    errors = []
+                    asyncio.get_running_loop().set_exception_handler(
+                        lambda _loop, context: errors.append(context))
+                    with self.assertRaises(TimeoutError):
+                        await asyncio.wait_for(fetch_resume_part(page, {
+                            'kind': 'document', 'mid': '42', 'id': '777', 'dc': 4,
+                            'peer': '-1', 'thumb': ''}, 0, 1024), timeout=.01)
+                    await asyncio.sleep(.2)
+                    self.assertFalse(_PENDING_PART_READS)
+                    self.assertEqual(errors, [])
+                finally:
+                    await browser.close()
+        asyncio.run(scenario())
+
+    def test_visible_chat_links_or_open_messages_are_session_entry_but_skeleton_is_not(self):
+        async def scenario():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(channel='chrome', headless=False)
+                try:
+                    page = await browser.new_page()
+                    for html in (
+                        '<div id="column-left"><a href="#-1">fixture</a></div>',
+                        '<div id="column-center"><div class="bubble" data-mid="42" '
+                        'data-peer-id="-1" style="height:10px;width:10px"></div></div>',
+                    ):
+                        await page.set_content(html)
+                        await wait_for_login(page, timeout=2_000)
+                    await page.set_content('<div id="column-left"></div>')
+                    with self.assertRaises(BrowserTimeout):
+                        await wait_for_login(page, timeout=100)
+                finally:
+                    await browser.close()
+        asyncio.run(scenario())
 
 
 HTML = '''

@@ -43,6 +43,7 @@ SCROLL = '#column-center .chat.active .bubbles-scrollable, #column-center > .bub
 MEDIA = MEDIA_SELECTOR
 SCAN_RECORD_ROOT = load_paths()['scan_records']
 SERVER_HISTORY_TIMEOUT = 60
+_PENDING_PART_READS: set[asyncio.Task] = set()
 
 
 async def server_history_with_recovery(page: Page, peer_id: int, oldest_mid: int,
@@ -881,14 +882,23 @@ def archive_empty_relocated_folders(root: Path, source_folders: set[Path],
         detail(f'已将 {total} 个空来源目录放入 {archive_root}')
 
 
-async def wait_for_login(page: Page) -> None:
+async def wait_for_login(page: Page, *, timeout: int = 300_000) -> None:
     """等到已登录账号的真实会话入口可见；页面骨架不能算登录成功。"""
-    chat = page.locator('#column-left.chatlist-container a[href^="#"]').first
+    chat = page.locator('#column-left a[href^="#"]:visible, '
+                        '#column-center .bubble[data-mid][data-peer-id]:visible').first
     try:
-        await chat.wait_for(state='visible', timeout=12_000)
+        await chat.wait_for(state='visible', timeout=min(12_000, timeout))
     except BrowserTimeout:
-        print('请在打开的 Chrome 中登录 Telegram Web；等待最多 5 分钟。', flush=True)
-        await chat.wait_for(state='visible', timeout=300_000)
+        status = await page.evaluate('''() => ({
+            ready: document.readyState,
+            chatLinks: [...document.querySelectorAll('#column-left a[href^="#"]')]
+                .filter(node => node.getClientRects().length > 0).length,
+            bubbles: document.querySelectorAll('#column-center .bubble[data-mid][data-peer-id]').length
+        })''')
+        detail(f'WEB_READY_WAIT ready={status["ready"]} chat_links={status["chatLinks"]} '
+               f'bubbles={status["bubbles"]}')
+        print('Telegram 会话入口尚未就绪；若页面显示登录请登录，等待最多 5 分钟。', flush=True)
+        await chat.wait_for(state='visible', timeout=timeout)
 
 
 async def open_group_from_chatlist(page: Page, expected: str) -> None:
@@ -1285,6 +1295,36 @@ async def resume_source(target, media_mid: str | None = None) -> dict:
 
 
 async def fetch_resume_part(page: Page, source: dict, offset: int, limit: int) -> bytes:
+    """外层限时后仍接收浏览器调用的终态，避免取消遗留未回收的驱动异常。"""
+    pending = asyncio.create_task(_part_read_outcome(page, source, offset, limit))
+    _PENDING_PART_READS.add(pending)
+    pending.add_done_callback(_consume_finished_part)
+    data, error = await asyncio.shield(pending)
+    if error is not None:
+        raise error
+    return data
+
+
+async def _part_read_outcome(page: Page, source: dict, offset: int,
+                             limit: int) -> tuple[bytes, Exception | None]:
+    """接管迟到错误；遵循 Python 3.14 shield 的任务引用与取消语义。
+
+    https://docs.python.org/3.14/library/asyncio-task.html#shielding-from-cancellation
+    """
+    try:
+        return await _fetch_resume_part(page, source, offset, limit), None
+    except Exception as error:
+        return b'', error
+
+
+def _consume_finished_part(task: asyncio.Task) -> None:
+    """超时调用可能在页面关闭时才失败；只回收其结果，不提交迟到分片。"""
+    _PENDING_PART_READS.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+async def _fetch_resume_part(page: Page, source: dict, offset: int, limit: int) -> bytes:
     """在已登录 Web K 中按偏移取一块，不把 access_hash 写入磁盘。"""
     if source['kind'] == 'photo' and source['size'] <= 1024 * 1024:
         encoded = await page.evaluate('''async ({source, offset, limit}) => {
@@ -2019,6 +2059,8 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
                     published.parent.mkdir(parents=True, exist_ok=True)
                     move_files_only(pending, published)
                     _record_moved_paths(record, pending, published)
+                    # 后续相册失败时 finalize_scan 不会执行，不能把来源收尾留到整轮结束。
+                    archive_empty_relocated_folders(root, {pending})
                     relocated_sources.add(pending)
                     existing_index = current_media_index()
                     detail(f'编组文件已核对并移入成品目录：{batch_name}')
