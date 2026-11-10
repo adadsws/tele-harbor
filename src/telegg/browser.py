@@ -35,7 +35,7 @@ from .progress import (date_label, file_line, group_line, media_label, media_tim
 from .resumable import PartialFile, download_parts, verified_completed_file
 from .scan_record import FoundMedia, ScanRecord
 from .verification_manifest import verified_digest, read_snapshot
-from .errors import LocalDataError
+from .errors import LocalDataError, RemoteFileError
 from .local_validation import validate_local_archive
 
 BUBBLE = '#column-center .bubble[data-mid]:not(.service)'
@@ -1301,6 +1301,9 @@ async def fetch_resume_part(page: Page, source: dict, offset: int, limit: int) -
     pending.add_done_callback(_consume_finished_part)
     data, error = await asyncio.shield(pending)
     if error is not None:
+        remote = re.search(r'TELEGG_REMOTE_FILE_ERROR:(5\d\d):([A-Z0-9_]+)', str(error))
+        if remote:
+            raise RemoteFileError(int(remote[1]), remote[2]) from error
         raise error
     return data
 
@@ -1326,6 +1329,9 @@ def _consume_finished_part(task: asyncio.Task) -> None:
 
 async def _fetch_resume_part(page: Page, source: dict, offset: int, limit: int) -> bytes:
     """在已登录 Web K 中按偏移取一块，不把 access_hash 写入磁盘。"""
+    # Web K ApiManager 的 noRetry 将 5xx 交给本项目的有界分片重试，避免内部无限重试。
+    # 参考 tweb ApiManager（2026-11-09）：
+    # https://github.com/morethanwords/tweb/blob/master/src/lib/appManagers/apiManager.ts
     if source['kind'] == 'photo' and source['size'] <= 1024 * 1024:
         encoded = await page.evaluate('''async ({source, offset, limit}) => {
             const message = window.__teleggServerMedia?.get(String(source.mid)) ||
@@ -1348,11 +1354,14 @@ async def _fetch_resume_part(page: Page, source: dict, offset: int, limit: int) 
             try {
                 const part = await timeout(window.appDownloadManager.managers.apiManager.invokeApi(
                     'upload.getFile', {location, offset, limit},
-                    {dcId: photo.dc_id, fileDownload: true, floodMaxTimeout: 10}));
+                    {dcId: photo.dc_id, fileDownload: true, floodMaxTimeout: 10,
+                     noRetry: true, noErrorBox: true}));
                 if (part?._ !== 'upload.file' || !(part.bytes instanceof Uint8Array))
                     throw new Error('Telegram 未返回普通照片分片');
                 bytes = part.bytes;
             } catch (error) {
+                if (Number(error?.code) >= 500 && Number(error?.code) < 600)
+                    throw new Error(`TELEGG_REMOTE_FILE_ERROR:${error.code}:${/^[A-Z0-9_]+$/.test(error.type || '') ? error.type : 'UNKNOWN'}`);
                 directError = String(error);
                 const blob = await timeout(window.appDownloadManager.managers.apiFileManager.downloadMedia({
                     media: photo, thumb
@@ -1389,8 +1398,11 @@ async def _fetch_resume_part(page: Page, source: dict, offset: int, limit: int) 
         try {
             part = await timeout(window.appDownloadManager.managers.apiManager.invokeApi(
                 'upload.getFile', {location, offset, limit},
-                {dcId: media.dc_id, fileDownload: true, floodMaxTimeout: 10}));
+                {dcId: media.dc_id, fileDownload: true, floodMaxTimeout: 10,
+                 noRetry: true, noErrorBox: true}));
         } catch (error) {
+            if (Number(error?.code) >= 500 && Number(error?.code) < 600)
+                throw new Error(`TELEGG_REMOTE_FILE_ERROR:${error.code}:${/^[A-Z0-9_]+$/.test(error.type || '') ? error.type : 'UNKNOWN'}`);
             directError = String(error);
             part = await timeout(window.appDownloadManager.managers.apiFileManager.requestFilePart({
                 dcId: media.dc_id, location, offset, limit
@@ -2018,6 +2030,8 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
                         failure(f'消息 m{item.mid} 附件 m{found.media_mid} 本地数据校验失败')
                         raise
                     record.record_result(found.media_mid, 'failed', detail=f'{type(exc).__name__}: {exc}')
+                    if isinstance(exc, RemoteFileError):
+                        print(f'  [远端文件错误] m{found.media_mid} · {exc}', flush=True)
                     failure(f'消息 m{item.mid} 附件 m{found.media_mid} 失败')
                     print(f'  [失败] {media_label(item, found.media_mid, done_files + 1, total_files)} · '
                           f'详情见 {log_location()}', flush=True)

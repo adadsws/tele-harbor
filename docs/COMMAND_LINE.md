@@ -3,6 +3,7 @@
 ## 简体中文
 
 BAT 结束时会标明正常结束、任务未完成、参数错误或用户中断，退出码分别为 0、1、2、130。持续分片超时在重建页面后仍失败时会明确显示“下载连接中断”，保留分片并停止本群，不无限重试。
+服务器明确返回文件 5xx 错误时，会显示“远端文件错误”，有界重试后记录该附件失败并继续其他附件；未完成文件不算已下载，本轮退出码仍为 1。
 诊断日志使用 `RUN_START` 和 `RUN_EXIT` 标记 PID、退出码及原因；帮助和参数错误也有结束记录。只有开始记录而没有结束记录时，需要结合进程状态和系统事件核实，不能仅凭空日志或最后一条下载记录断言崩溃。
 
 在 CMD 中运行 `download.bat`。不带参数时进入数字菜单；也可以直接指定处理范围：
@@ -27,6 +28,7 @@ download.bat "https://web.telegram.org/k/#-1000000005" --limit 20
 ## English
 
 BAT distinguishes normal completion (0), an incomplete task (1), invalid arguments (2), and user interruption (130). Persistent transfer timeouts stop the affected group after bounded recovery and preserve partial downloads.
+Explicit file-server 5xx errors remain file failures after bounded retries while other attachments continue. Failed files are never counted as downloaded, and the run still exits with code 1.
 Diagnostic logs include `RUN_START` and `RUN_EXIT` with PID, code, and reason, including help and parser exits. A missing exit marker requires checking process state and system events; it alone does not establish a crash.
 
 Run `download.bat` from CMD. With no options, it opens the numbered menu. You can also choose a range directly:

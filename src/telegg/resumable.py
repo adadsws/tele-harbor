@@ -9,6 +9,7 @@ import os
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
+from .errors import RemoteFileError
 
 CHUNK_SIZE = 1024 * 1024
 LEGACY_CHUNK_SIZE = 256 * 1024
@@ -199,6 +200,8 @@ async def download_parts(partial: PartialFile, fetch: Callable[[int, int], Await
                 return data
             except Exception as exc:
                 if attempt == 2:
+                    if isinstance(exc, RemoteFileError):
+                        raise
                     raise RuntimeError(f'分片偏移 {offset} 连续失败：{type(exc).__name__}: {exc}') from exc
                 await asyncio.sleep(attempt + 1)
         raise AssertionError('分片重试应已返回或抛错')

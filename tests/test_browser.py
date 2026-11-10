@@ -113,6 +113,24 @@ class SessionEntryTests(unittest.TestCase):
                     await asyncio.sleep(.2)
                     self.assertFalse(_PENDING_PART_READS)
                     self.assertEqual(errors, [])
+                    from telegg.errors import RemoteFileError
+                    await page.evaluate('''() => {
+                        window.nativeCalls = 0;
+                        window.appDownloadManager.managers.apiManager.invokeApi = async (_m, _p, options) => {
+                            window.lastOptions = options;
+                            throw {code: 500, type: 'UNKNOWN'};
+                        };
+                        window.appDownloadManager.managers.apiFileManager.requestFilePart = async () => {
+                            window.nativeCalls++; throw new Error('must not mask server error');
+                        };
+                    }''')
+                    with self.assertRaises(RemoteFileError) as failed:
+                        await fetch_resume_part(page, {'kind': 'document', 'mid': '42',
+                            'id': '777', 'dc': 4, 'peer': '-1', 'thumb': ''}, 0, 1024)
+                    self.assertEqual(failed.exception.code, 500)
+                    self.assertEqual(await page.evaluate('window.nativeCalls'), 0)
+                    self.assertTrue(await page.evaluate('window.lastOptions.noRetry'))
+                    self.assertTrue(await page.evaluate('window.lastOptions.noErrorBox'))
                 finally:
                     await browser.close()
         asyncio.run(scenario())

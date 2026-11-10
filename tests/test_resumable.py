@@ -9,11 +9,35 @@ from pathlib import Path
 from telegg.resumable import (CHUNK_SIZE, LEGACY_CHUNK_SIZE, PartialFile,
                               download_parts, verified_completed_file)
 from telegg.local_config import load_paths
+from telegg.errors import RemoteFileError
 
 TEST_ROOT = load_paths()['test_artifacts']
 
 
 class ResumeTests(unittest.TestCase):
+    def test_remote_file_error_is_bounded_preserved_and_can_later_resume(self):
+        partial = self.partial()
+        calls = []
+
+        async def unavailable(offset, limit):
+            calls.append(offset)
+            raise RemoteFileError(500, 'UNKNOWN')
+
+        with self.assertRaises(RemoteFileError):
+            asyncio.run(download_parts(partial, unavailable))
+        self.assertTrue(calls)
+        self.assertLessEqual(calls.count(0), 3)
+        self.assertEqual(partial.offset, 0)
+
+        async def recovered(offset, limit):
+            return self.content[offset:offset + limit]
+
+        reopened = self.partial()
+        asyncio.run(download_parts(reopened, recovered))
+        final = self.root / 'recovered.bin'
+        reopened.finalize(final)
+        self.assertEqual(final.read_bytes(), self.content)
+
     def setUp(self):
         self.root = TEST_ROOT / f'resume-{uuid.uuid4().hex}'
         self.content = bytes(range(256)) * (CHUNK_SIZE // 256 * 2) + b'end'
