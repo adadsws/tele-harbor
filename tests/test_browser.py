@@ -1,4 +1,4 @@
-"""在可见 Chrome 的本地页面验证消息识别与浏览器下载事件。"""
+"""在无可见窗口 Chrome 的本地页面验证消息识别与浏览器下载事件。"""
 
 import asyncio
 import json
@@ -105,7 +105,7 @@ class SessionEntryTests(unittest.TestCase):
     def test_native_navigation_in_visible_chrome_reaches_requested_message(self):
         async def scenario():
             async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(channel='chrome', headless=False)
+                browser = await playwright.chromium.launch(channel='chrome', headless=True)
                 try:
                     page = await browser.new_page()
                     await page.set_content('''<div id="column-center">
@@ -136,7 +136,7 @@ class SessionEntryTests(unittest.TestCase):
 
         async def scenario():
             async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(channel='chrome', headless=False)
+                browser = await playwright.chromium.launch(channel='chrome', headless=True)
                 try:
                     page = await browser.new_page()
                     await page.set_content('''<script>
@@ -184,7 +184,7 @@ class SessionEntryTests(unittest.TestCase):
     def test_visible_chat_links_or_open_messages_are_session_entry_but_skeleton_is_not(self):
         async def scenario():
             async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(channel='chrome', headless=False)
+                browser = await playwright.chromium.launch(channel='chrome', headless=True)
                 try:
                     page = await browser.new_page()
                     for html in (
@@ -641,7 +641,7 @@ class BrowserTests(unittest.TestCase):
             async with async_playwright() as playwright:
                 context = await playwright.chromium.launch_persistent_context(
                     str(TEST_ROOT / 'chrome-fixture-profile'), channel='chrome',
-                    headless=False, accept_downloads=True,
+                    headless=True, accept_downloads=True,
                 )
                 try:
                     page = context.pages[0] if context.pages else await context.new_page()

@@ -8,10 +8,13 @@ BAT 结束时会标明正常结束、任务未完成、参数错误或用户中�
 
 在 CMD 中运行 `download.bat`。不带参数时进入数字菜单；也可以直接指定处理范围：
 
+正常双击 BAT 保留可见 CMD 和 Chrome。调试窗口独立于两种校验模式：`--debug-window hidden` 使用无可见 Chrome 窗口，`--debug-window visible` 使用可见窗口（正常入口默认）。自动实测工具默认 hidden，不自动弹出窗口，也不会在登录失效时自动切换为 visible；首次登录请使用正常 BAT 或显式 `--login-only --debug-window visible`。从已打开的 CMD 传入 hidden 不会隐藏该 CMD 本身。
+
 ```bat
 download.bat --limit 20
 download.bat --limit 20 --dry-run
 download.bat --limit 20 --verify exact
+download.bat --limit 20 --debug-window hidden
 download.bat "https://web.telegram.org/k/#-1000000005" --limit 20
 ```
 
@@ -33,10 +36,13 @@ Diagnostic logs include `RUN_START` and `RUN_EXIT` with PID, code, and reason, i
 
 Run `download.bat` from CMD. With no options, it opens the numbered menu. You can also choose a range directly:
 
+Normal double-click use keeps CMD and Chrome visible. Debug display is independent of verification: `--debug-window hidden` runs Chrome without a visible window, while `--debug-window visible` is the normal entry default. The live-test harness defaults to hidden and never opens a visible browser automatically on sign-in failure. Use normal BAT or `--login-only --debug-window visible` to sign in. The hidden option does not hide an already open CMD window.
+
 ```bat
 download.bat --limit 20
 download.bat --limit 20 --dry-run
 download.bat --limit 20 --verify exact
+download.bat --limit 20 --debug-window hidden
 download.bat "https://web.telegram.org/k/#-1000000005" --limit 20
 ```
 

@@ -27,4 +27,6 @@ Use “Switch mode” in the menu to change modes. Enter `0` to exit. Removing a
 
 Keep local configuration, sign-in data, and downloads on your own computer; do not upload them.
 
+Opening the BAT normally shows its window. Automated debugging supports hidden and visible browser windows; see [More usage options](docs/COMMAND_LINE.md).
+
 [More usage options](docs/COMMAND_LINE.md) · [Documentation](docs/README.md)

@@ -27,4 +27,6 @@
 
 本机配置、登录资料和下载内容请留在自己的电脑上，不要上传。
 
+正常打开 BAT 会显示窗口。自动调试支持无可见窗口和有可见窗口两种方式，见 [更多用法](docs/COMMAND_LINE.md)。
+
 [更多用法](docs/COMMAND_LINE.md) · [文档导航](docs/README.md)

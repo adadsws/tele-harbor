@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from telegg.browser import download_group
 from telegg.group_menu import ConfiguredGroup, choose_groups, load_groups, parse_groups
-from telegg.__main__ import run
+from telegg.__main__ import arguments, run
 from telegg.local_config import load_paths
 
 
@@ -160,6 +160,47 @@ class GroupMenuTests(unittest.TestCase):
         self.assertEqual(menu.call_count, 2)
         download.assert_awaited_once()
         self.assertIn('返回主菜单', output.getvalue())
+
+    def test_normal_entry_is_visible_and_debug_can_be_hidden(self):
+        with (patch('telegg.__main__.load_paths', return_value={'output': Path('fixture-output')}),
+              patch('telegg.__main__.load_groups', return_value=[])):
+            self.assertEqual(arguments([]).debug_window, 'visible')
+            self.assertEqual(arguments(['--debug-window', 'hidden']).debug_window, 'hidden')
+            self.assertEqual(arguments(['--debug-window', 'hidden', '--verify', 'exact']).verify, 'exact')
+
+    def test_debug_window_selection_reaches_browser_and_closes_it(self):
+        for mode in ('hidden', 'visible'):
+            with self.subTest(mode=mode):
+                page, context = AsyncMock(), AsyncMock()
+                context.pages = [page]
+                launch = AsyncMock(return_value=context)
+                manager = MagicMock()
+                manager.__aenter__ = AsyncMock(return_value=SimpleNamespace(
+                    chromium=SimpleNamespace(launch_persistent_context=launch)))
+                manager.__aexit__ = AsyncMock(return_value=None)
+                args = argparse.Namespace(groups=[FIRST], output=Path('fixture-output'),
+                    limit=1, dry_run=False, audit_messages=None, full_scan=False,
+                    login_only=False, verify='fast', debug_window=mode)
+                with (patch('telegg.__main__.arguments', return_value=args),
+                      patch('telegg.__main__.load_paths', return_value={
+                          'chrome_profile': Path(__file__).parents[1] / '~temp/tests/window-profile'}),
+                      patch('telegg.__main__.async_playwright', return_value=manager),
+                      patch('telegg.__main__.wait_for_login', new_callable=AsyncMock) as login,
+                      patch('telegg.__main__.download_group', new_callable=AsyncMock,
+                            return_value=(1, 0, 1, 0)), redirect_stdout(io.StringIO())):
+                    self.assertEqual(asyncio.run(run([])), 0)
+                self.assertEqual(launch.call_args.kwargs['headless'], mode == 'hidden')
+                self.assertEqual(login.call_args.kwargs['timeout'], 15_000 if mode == 'hidden' else 300_000)
+                context.close.assert_awaited_once()
+
+    def test_hidden_login_only_fails_before_starting_browser(self):
+        args = argparse.Namespace(groups=[], limit=None, audit_messages=None,
+                                  full_scan=False, debug_window='hidden', login_only=True)
+        with (patch('telegg.__main__.arguments', return_value=args),
+              patch('telegg.__main__.async_playwright') as browser,
+              self.assertRaisesRegex(ValueError, 'visible')):
+            asyncio.run(run([]))
+        browser.assert_not_called()
 
 
 if __name__ == '__main__':

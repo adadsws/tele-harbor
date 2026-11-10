@@ -3,9 +3,10 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from telegg.browser import resume_endpoint, resume_title_anchor, verify_resume_prefix
+from telegg.browser import completed_source, resume_endpoint, resume_title_anchor, verify_resume_prefix
 from telegg.browser import resume_avatar_prefix
 from telegg.layout import Message
 
@@ -20,6 +21,17 @@ def message(number: int, kind: str = 'photo') -> Message:
 
 
 class CheckpointJumpTests(unittest.TestCase):
+    def test_completed_prefix_checks_indexed_path_without_per_file_io(self):
+        mid = str(BASE + 104)
+        path = Path('fixture-output/correct/file.bin')
+        record = SimpleNamespace(results={mid: {
+            'status': 'downloaded', 'naming_revision': 3, 'detail': str(path)}},
+            content_files={mid: 'fixture-content'})
+        with patch.object(Path, 'stat', side_effect=AssertionError('fast prefix must not stat files')):
+            self.assertTrue(completed_source(mid, {'content_type': 'photo'}, record, {mid: [path]}))
+            self.assertFalse(completed_source(mid, {'content_type': 'photo'}, record,
+                                             {mid: [Path('fixture-output/wrong/file.bin')]}))
+
     def test_resume_carries_all_newer_blocks_in_same_avatar_segment(self):
         rows = [Message(str(BASE + mid), '', 1700000000 + mid, 0, sender_id=sender)
                 for mid, sender in ((209, 'same'), (219, 'same'), (229, 'same'),

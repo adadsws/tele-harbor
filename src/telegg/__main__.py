@@ -1,4 +1,4 @@
-"""BAT/CMD 入口：可见 Chrome 的 Telegram Web 批量下载。"""
+"""BAT/CMD 入口：正常可见运行，自动调试可明确选择无窗口。"""
 
 from __future__ import annotations
 
@@ -35,6 +35,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
                         help=argparse.SUPPRESS)
     parser.add_argument('--verify', choices=('fast', 'exact'), default='fast',
                         help='已有文件校验：fast 按消息编组标记快速跳过（默认），exact 逐文件重新计算 SHA-256')
+    parser.add_argument('--debug-window', choices=('hidden', 'visible'), default='visible',
+                        help='调试窗口：hidden 无可见 Chrome 窗口，visible 有可见窗口（正常 BAT 默认）')
     parser.add_argument('--login-only', action='store_true', help='只打开 Chrome 供首次登录')
     parser.add_argument('--pause-at-oldest', action='store_true', help=argparse.SUPPRESS)
     return parser.parse_args(argv)
@@ -58,12 +60,15 @@ async def run(argv: list[str] | None = None) -> int:
         raise ValueError('--pause-at-oldest 的旧网页暂停流程已停用；下载扫描使用服务器原始消息')
     for url in args.groups:
         group_id(url)
+    hidden = getattr(args, 'debug_window', 'visible') == 'hidden'
+    if args.login_only and hidden:
+        raise ValueError('首次登录需要 --debug-window visible；无可见窗口模式不能交互登录')
     profile = load_paths()['chrome_profile']
     profile.mkdir(parents=True, exist_ok=True)
-    print('[Chrome] 启动可见窗口，打开 Telegram Web。', flush=True)
+    print(f'[Chrome] {"无可见窗口调试" if hidden else "启动可见窗口"}，打开 Telegram Web。', flush=True)
     async with async_playwright() as playwright:
         context = await playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile), channel='chrome', headless=False,
+            user_data_dir=str(profile), channel='chrome', headless=hidden,
             accept_downloads=True, viewport=None,
         )
         page = context.pages[0] if context.pages else await context.new_page()
@@ -77,7 +82,13 @@ async def run(argv: list[str] | None = None) -> int:
 
         try:
             await page.goto('https://web.telegram.org/k/', wait_until='domcontentloaded')
-            await wait_for_login(page)
+            try:
+                await wait_for_login(page, timeout=15_000 if hidden else 300_000)
+            except BrowserTimeout:
+                if hidden:
+                    print('[登录未就绪] 无可见窗口模式不自动开窗；'
+                          '请使用 --debug-window visible 检查登录后重试。', flush=True)
+                raise
             print('[准备] 环境就绪：Chrome 已打开，Telegram 已登录。', flush=True)
             if args.login_only:
                 print('按 Enter 关闭 Chrome。', flush=True)

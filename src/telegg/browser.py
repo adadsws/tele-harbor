@@ -277,7 +277,7 @@ async def server_media_source(page: Page, peer_id: int, media_mid: str) -> dict:
 
 def completed_source(mid: str, source: dict, record: ScanRecord,
                      existing_index: dict[str, list[Path]]) -> bool:
-    """快速端点只越过已有成功结果且文件索引完整的原消息。"""
+    """快速端点只越过路径记录与批量索引一致的原消息，不逐文件读盘。"""
     kind = source.get('content_type')
     result = record.results.get(mid, {})
     status = result.get('status')
@@ -286,6 +286,8 @@ def completed_source(mid: str, source: dict, record: ScanRecord,
         return (result.get('naming_revision') == 3
                 and status in ('downloaded', 'skipped', 'relocated')
                 and len(files) == 1
+                and isinstance(result.get('detail'), str)
+                and files[0] == Path(result['detail'])
                 and mid in record.content_files)
     return status in ('saved_content', 'no_media') and mid in record.content_files
 
@@ -897,7 +899,7 @@ async def wait_for_login(page: Page, *, timeout: int = 300_000) -> None:
         })''')
         detail(f'WEB_READY_WAIT ready={status["ready"]} chat_links={status["chatLinks"]} '
                f'bubbles={status["bubbles"]}')
-        print('Telegram 会话入口尚未就绪；若页面显示登录请登录，等待最多 5 分钟。', flush=True)
+        print(f'Telegram 会话入口尚未就绪，继续等待最多 {timeout // 1000} 秒。', flush=True)
         await chat.wait_for(state='visible', timeout=timeout)
 
 
