@@ -1193,11 +1193,42 @@ async def iter_history(page: Page, limit: int | None, known_ids: set[str],
     print(f'[扫描] 已到可访问历史最早日期 {date_label(earliest_timestamp)}', flush=True)
 
 
+def message_bubble_selector(source_url: str, mid: str) -> str:
+    """相册成员的原消息号也能定位到所属气泡，且必须属于目标群。"""
+    number = str(int(mid))
+    return (f'{BUBBLE}[data-peer-id="{group_id(source_url)}"]:is('
+            f'[data-mid="{number}"],:has(.album-item[data-mid="{number}"]),'
+            f':has(.grouped-item[data-mid="{number}"]))')
+
+
+async def open_message_with_native_ui(page: Page, source_url: str, mid: str) -> bool:
+    """原生跳转后核对目标群和消息，地址变化本身不能证明已定位。"""
+    # Telegram Web K AppImManager.setInnerPeer，2026-11-10 验证：
+    # https://github.com/morethanwords/tweb/blob/master/src/lib/appImManager.ts
+    try:
+        called = await asyncio.wait_for(page.evaluate('''async ({peerId, mid}) => {
+            const im = window.appImManager;
+            if (typeof im?.setInnerPeer !== 'function') return false;
+            await im.setInnerPeer({peerId: Number(peerId), lastMsgId: Number(mid)});
+            return true;
+        }''', {'peerId': group_id(source_url), 'mid': mid}), timeout=12)
+        if called is not True:
+            return False
+        await page.locator(message_bubble_selector(source_url, mid)).first.wait_for(
+            state='attached', timeout=8_000)
+        return True
+    except Exception as exc:
+        detail(f'原生消息定位未完成 m{mid}: {type(exc).__name__}')
+        return False
+
+
 async def locate_message(page: Page, source_url: str, item: Message):
-    """优先使用 Web K 消息地址；地址未生效时沿可见历史回找。"""
-    selector = f'{BUBBLE}[data-mid="{item.mid}"]'
+    """先使用原生界面定位旧消息；不可用时保留地址和可见历史回找。"""
+    selector = message_bubble_selector(source_url, item.mid)
     bubble = page.locator(selector).first
     if not await bubble.count():
+        if await open_message_with_native_ui(page, source_url, item.mid):
+            return bubble
         # 当前页已在相邻旧消息附近时，沿现有虚拟列表往旧端找，避免每次从最新端重滚。
         if page.url.startswith(source_url):
             try:

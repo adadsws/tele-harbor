@@ -12,6 +12,7 @@ Download and organize files and text from Telegram groups on Windows. Supports m
 4. Use the numbered menu to add groups, then download a selected group or all groups.
 
 Messages are processed from newest to oldest. Run the program again after an interruption to continue. Files and text are organized by group.
+Older-message navigation checks the requested group and message ID.
 If a connection remains unavailable, the program explains the stop and keeps your progress. Run it again once the connection recovers.
 If the server cannot provide a file, it remains recorded as failed while other files continue; it is never counted as downloaded.
 

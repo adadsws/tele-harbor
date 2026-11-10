@@ -13,6 +13,7 @@ from playwright.async_api import TimeoutError as BrowserTimeout, async_playwrigh
 from telegg.browser import (BUBBLE, MediaTask, discover_media, existing_media_index,
                             is_transport_timeout,
                             locate_message, media_targets, open_group, open_group_from_chatlist,
+                            open_message_with_native_ui,
                             publish_ready_staged_groups, save_media, save_one,
                             save_media_with_recovery, visible_messages, wait_for_login)
 from telegg.content_types import classify, validate_types
@@ -85,6 +86,51 @@ class PublicationFailureTests(unittest.TestCase):
 
 
 class SessionEntryTests(unittest.TestCase):
+    def test_native_navigation_requires_matching_peer_and_message(self):
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value=True)
+        page.locator.return_value.first.wait_for = AsyncMock(
+            side_effect=BrowserTimeout('target not present'))
+        self.assertFalse(asyncio.run(open_message_with_native_ui(
+            page, 'https://web.telegram.org/k/#-1', '4294967400')))
+        selector = page.locator.call_args.args[0]
+        self.assertIn('[data-peer-id="-1"]', selector)
+        self.assertIn('[data-mid="4294967400"]', selector)
+        page.evaluate = AsyncMock(return_value=False)
+        page.locator.reset_mock()
+        self.assertFalse(asyncio.run(open_message_with_native_ui(
+            page, 'https://web.telegram.org/k/#-1', '4294967400')))
+        page.locator.assert_not_called()
+
+    def test_native_navigation_in_visible_chrome_reaches_requested_message(self):
+        async def scenario():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(channel='chrome', headless=False)
+                try:
+                    page = await browser.new_page()
+                    await page.set_content('''<div id="column-center">
+                    <div class="bubble" data-mid="4294967400" data-peer-id="-2"></div>
+                    </div><script>
+                    window.appImManager = {async setInnerPeer(options) {
+                        window.navigation = options;
+                        const e = document.createElement('div');e.className = 'bubble';
+                        e.dataset.mid = options.lastMsgId - 1;e.dataset.peerId = options.peerId;
+                        const member = document.createElement('div');member.className = 'album-item';
+                        member.dataset.mid = options.lastMsgId;e.append(member);
+                        document.querySelector('#column-center').append(e);
+                    }};
+                    </script>''')
+                    target = Message('4294967400', '', 1700000000, 0)
+                    located = await locate_message(page, 'https://web.telegram.org/k/#-1', target)
+                    self.assertEqual(await located.count(), 1)
+                    self.assertEqual(await located.get_attribute('data-peer-id'), '-1')
+                    self.assertEqual(await located.get_attribute('data-mid'), '4294967399')
+                    self.assertEqual(await page.evaluate('window.navigation'),
+                                     {'peerId': -1, 'lastMsgId': 4294967400})
+                finally:
+                    await browser.close()
+        asyncio.run(scenario())
+
     def test_part_timeout_collects_real_browser_rejection(self):
         from telegg.browser import fetch_resume_part, _PENDING_PART_READS
 
@@ -340,7 +386,7 @@ class BrowserTests(unittest.TestCase):
         scroll = MagicMock()
         scroll.hover = AsyncMock()
         page.locator.side_effect = lambda selector: SimpleNamespace(
-            first=scroll if selector != f'{BUBBLE}[data-mid="105"]' else bubble)
+            first=bubble if '[data-mid="105"]' in selector else scroll)
         page.mouse.wheel = AsyncMock()
         page.wait_for_timeout = AsyncMock()
         with patch('telegg.browser.visible_messages', new_callable=AsyncMock,
