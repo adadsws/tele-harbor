@@ -249,8 +249,10 @@ class ScanRecordTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '不能确认历史最早端'):
                 asyncio.run(collect())
         self.assertFalse(progress.reached_oldest)
-        page.goto.assert_awaited_once_with('https://web.telegram.org/k/#-1000000004_90',
-                                            wait_until='domcontentloaded')
+        self.assertEqual(page.goto.await_count, 2)
+        self.assertEqual(page.goto.await_args_list[0].args, ('about:blank',))
+        page.goto.assert_awaited_with('https://web.telegram.org/k/#-1000000004?message=90',
+                                     wait_until='domcontentloaded')
 
     def test_api_scan_finishes_when_server_has_no_older_content(self):
         newer = Message(str((1 << 32) + 7), '新', 1788351394, 0)

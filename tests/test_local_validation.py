@@ -51,6 +51,67 @@ class LocalValidationTests(unittest.TestCase):
         self.check()
         self.assertEqual(before, {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
 
+    def pending_link(self):
+        root, staging = self.base / 'linked-output', self.base / 'linked-staging'
+        target = Message('100', 'target', 1700000000, 0,
+                         (('100', 'target', 1700000000, False),), (('100', 'text'),), sender_id='a')
+        source = Message('200', 'source', 1700000600, 0,
+                         (('200', 'source', 1700000600, False),), (('200', 'text'),),
+                         reply_targets=(('200', '100'),), sender_id='b')
+        record = ScanRecord(self.base / 'pending-record.jsonl')
+        record.record_scan([target, source], reached_oldest=False)
+        parent = staging / (group_folder(target) + ' 关联组')
+        folder = parent / group_folder(source)
+        save_group_manifest(folder, [source])
+        content = folder / '2023-11-15-m200_source.txt'
+        content.write_text('source', encoding='utf-8')
+        record.record_content_file('200', content)
+        record.record_result('200', 'saved_content')
+        record.record_result('100', 'failed')
+        manifest = parent / '关联清单.json'
+        manifest.write_text(json.dumps({'replies': [{'source_message_id': '200', 'target_message_id': '100'}]}), encoding='utf-8')
+        return root, staging, record, manifest
+
+    def test_pending_link_with_missing_target_files_is_valid_and_read_only(self):
+        root, staging, record, _ = self.pending_link()
+        before = {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+        validate_local_archive(root, staging, record, self.partials)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
+
+    def test_missing_staged_link_manifest_is_rejected_before_mutation(self):
+        root, staging, record, manifest = self.pending_link()
+        manifest.rename(self.base / 'held-link.json')
+        before = {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+        with self.assertRaises(LocalDataError):
+            validate_local_archive(root, staging, record, self.partials)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
+
+    def test_corrupt_staged_link_manifest_is_rejected_before_mutation(self):
+        root, staging, record, manifest = self.pending_link()
+        manifest.write_bytes(b'{broken')
+        before = {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+        with self.assertRaises(LocalDataError):
+            validate_local_archive(root, staging, record, self.partials)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
+
+    def test_wrong_staged_reply_target_is_rejected_before_mutation(self):
+        root, staging, record, manifest = self.pending_link()
+        manifest.write_text(json.dumps({'replies': [{'source_message_id': '200', 'target_message_id': '999'}]}), encoding='utf-8')
+        before = {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+        with self.assertRaises(LocalDataError):
+            validate_local_archive(root, staging, record, self.partials)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
+
+    def test_duplicate_media_is_rejected_before_records_change(self):
+        first = self.folder / '2023-11-15-m999_1_777.bin'
+        second = self.folder / '2023-11-15-m999_1_777_duplicate.bin'
+        first.write_bytes(b'fixture')
+        second.write_bytes(b'fixture')
+        before = {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(LocalDataError, '重复媒体'):
+            self.check()
+        self.assertEqual(before, {p: p.read_bytes() for p in self.base.rglob('*') if p.is_file()})
+
     def test_renamed_completed_file_is_not_repaired(self):
         moved = self.path.with_name('wrong.bin')
         self.path.rename(moved)

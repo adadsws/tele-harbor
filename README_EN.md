@@ -12,21 +12,22 @@ Download and organize files and text from Telegram groups on Windows. Supports m
 4. Use the numbered menu to add groups, then download a selected group or all groups.
 
 Messages are processed from newest to oldest. Run the program again after an interruption to continue. Files and text are organized by group.
-Older-message navigation checks the requested group and message ID.
-If a connection remains unavailable, the program explains the stop and keeps your progress. Run it again once the connection recovers.
-If the server cannot provide a file, it remains recorded as failed while other files continue; it is never counted as downloaded.
+
+Connection problems are explained and your progress is kept. If a file still fails after retries, the script writes a same-name TXT explanation, keeps its failed status, and continues with other files. The explanation is archived once the original file is recovered and verified.
 
 The example configuration saves downloads in `~outputs-final/downloaded` by default.
 
 ## Two modes
 
-- Fast mode (default): skip completed items and continue unfinished downloads.
-- Per-file check mode: check existing files. File, path, or record problems stop the affected group with an error.
+- Fast mode (default): check the latest messages, then use valid completion markers to jump close to unfinished downloads. Older records may need an initial marker update.
+- Per-file check mode: check existing files. Duplicate files, path, or record problems stop the affected group with an error.
 
 Use “Switch mode” in the menu to change modes. Enter `0` to exit. Removing a group from the menu keeps its downloaded files.
 
 Keep local configuration, sign-in data, and downloads on your own computer; do not upload them.
 
 Opening the BAT normally shows its window. Automated debugging supports hidden and visible browser windows; see [More usage options](docs/COMMAND_LINE.md).
+
+The usage guide also explains how to link directly to an original message.
 
 [More usage options](docs/COMMAND_LINE.md) · [Documentation](docs/README.md)

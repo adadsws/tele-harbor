@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
 
-from playwright.async_api import Page, TimeoutError as BrowserTimeout
+from playwright.async_api import Error as BrowserError, Page, TimeoutError as BrowserTimeout
 
 from .content_archive import (prepare_group_folder,
                               prepare_item_folders, save_group_manifest,
@@ -24,18 +24,20 @@ from .content_types import DOWNLOADABLE, METADATA_ONLY, MEDIA_SELECTOR, classify
 from .diagnostics import detail, failure, log_location
 from .folder_archive import archive_empty_folders
 from .layout import (Message, destination, group_folder, group_id, group_root, grouped,
-                     same_avatar_group, safe_name)
+                     message_url, same_avatar_group, safe_name)
 from .reply_groups import (LINKED_NAME, _record_moved_paths, linked_group_names,
                            parent_for, reconcile_reply_groups)
 from .local_reuse import (has_group_files, move_files_only, rekey_legacy_media,
                           reuse_root)
 from .local_config import load_paths
+from .media_index import existing_media_index, media_version
 from .progress import (date_label, file_line, group_line, media_label, media_timestamp, size_label,
                        message_count, ProgressLine)
 from .resumable import PartialFile, download_parts, verified_completed_file
 from .scan_record import FoundMedia, ScanRecord
 from .verification_manifest import verified_digest, read_snapshot
 from .errors import LocalDataError, RemoteFileError
+from .failure_notes import retire_failure_note, write_failure_note
 from .local_validation import validate_local_archive
 
 BUBBLE = '#column-center .bubble[data-mid]:not(.service)'
@@ -348,6 +350,7 @@ def demote_unready_replies(root: Path, staging_root: Path, record: ScanRecord,
             source = present[0]
             moves.append((source, parent_for(staging_root, anchor, links) / source.name))
     for source in root.iterdir():
+        # 只识别历史引用标记以隔离未齐旧数据；现行规范不再生成此类文件。
         if has_group_files(source) and not LINKED_NAME.fullmatch(source.name) and any(
                 source.rglob('%引用目标*.txt')) and not any(old == source for old, _ in moves):
             moves.append((source, staging_root / source.name))
@@ -400,11 +403,65 @@ def resume_avatar_prefix(messages: list[Message], endpoint: int | None) -> list[
     return list(reversed(prefix))
 
 
+def _prefix_media(record) -> dict[str, dict[str, FoundMedia]]:
+    result: dict[str, dict[str, FoundMedia]] = {}
+    for found in getattr(record, 'media', {}).values():
+        result.setdefault(found.source_mid, {})[found.media_mid] = found
+    return result
+
+
+def trusted_resume_prefix(record, existing_index, endpoint, max_messages=None):
+    """只信任匹配当前消息/附件的核验标记；不逐文件读盘或重查旧服务器页。"""
+    media = _prefix_media(record)
+    checked, seen, files = {}, 0, 0
+    limit_album, last = '', endpoint + 1
+    messages = getattr(record, 'messages', {})
+    marks = getattr(record, 'verified_messages', {})
+    for mid in sorted((m for m in record.source_messages if int(m) > endpoint), key=int, reverse=True):
+        source = record.source_messages[mid]
+        bubble = messages.get(str(source.get('bubble_mid', mid)))
+        if bubble is None:
+            return None
+        if limit_album and bubble.album_id != limit_album:
+            return last - 1, seen, files
+        if bubble.mid not in checked:
+            checked[bubble.mid] = marks.get(bubble.mid) == verified_group_signature(
+                [bubble], {bubble.mid: media.get(bubble.mid, {})})
+        if not checked[bubble.mid] or not completed_source(mid, source, record, existing_index):
+            return None
+        seen += 1
+        files += source.get('content_type') in DOWNLOADABLE
+        last = int(mid)
+        if max_messages is not None and seen >= max_messages:
+            if not bubble.album_id:
+                return last - 1, seen, files
+            limit_album = bubble.album_id
+    return endpoint, seen, files
+
+
+def _mark_checked_prefix(record, seen, existing_index):
+    """旧记录只在线性服务器核对后补整条消息标记，不给半个相册补标记。"""
+    if not hasattr(record, 'mark_message_verified'):
+        return
+    media = _prefix_media(record)
+    for item in record.messages.values():
+        ids = {part[0] for part in item.parts}
+        if ids and ids <= seen and all(completed_source(mid, record.source_messages[mid], record, existing_index) for mid in ids):
+            record.mark_message_verified(item.mid, verified_group_signature([item], {item.mid: media.get(item.mid, {})}))
+
+
 async def verify_resume_prefix(page: Page, peer_id: int, endpoint: int,
                                record: ScanRecord,
                                existing_index: dict[str, list[Path]],
                                max_messages: int | None = None) -> tuple[int, int, int] | None:
-    """核对端点前缀；遇到首个变化或缺失项就在该处开始处理。"""
+    """核对最新页后信任有效标记；旧缓存无标记时线性核对并补标记。"""
+    result, seen = await _verify_resume_prefix(page, peer_id, endpoint, record, existing_index, max_messages)
+    if result is not None:
+        _mark_checked_prefix(record, seen, existing_index)
+    return result
+
+
+async def _verify_resume_prefix(page, peer_id, endpoint, record, existing_index, max_messages):
     seen: set[str] = set()
     media_files = 0
     limit_album = ''
@@ -415,29 +472,36 @@ async def verify_resume_prefix(page: Page, peer_id: int, endpoint: int,
         batch = await server_history_with_recovery(page, peer_id, offset, server_older_batch)
         if not batch:
             print('[快速模式] 端点前服务器返回空页，改为顺序扫描', flush=True)
-            return None
+            return None, seen
         reached = False
         for item in batch:
             mid = item.mid
             if limit_album and item.album_id != limit_album:
-                return last_included - 1, len(seen), media_files
+                return (last_included - 1, len(seen), media_files), seen
             if int(mid) <= endpoint:
                 if str(endpoint) in record.source_messages and int(mid) != endpoint:
                     # 端点消息已不可访问；只在较新区间完整匹配时从下一条继续。
-                    return int(mid), len(seen), media_files
+                    return (int(mid), len(seen), media_files), seen
                 reached = True
                 break
             previous = record.source_messages.get(mid)
+            previous_bubble = (getattr(record, 'messages', {}).get(str(previous.get('bubble_mid', mid)))
+                               if previous else None)
             valid = (previous is not None and previous.get('timestamp') == item.timestamp
                     and previous.get('text') == item.text
                     and previous.get('has_media') == item.parts[0][3]
                     and previous.get('content_type') == item.content_types[0][1]
+                    and (previous_bubble is None or
+                         (previous_bubble.album_id == item.album_id
+                          and previous_bubble.sender_id == item.sender_id
+                          and previous_bubble.outgoing == item.outgoing
+                          and previous_bubble.post_author == item.post_author))
                     and completed_source(mid, previous, record, existing_index))
             if not valid:
                 if item.album_id and last_seen_album == item.album_id:
                     print('[快速模式] 相册中部出现变化，改为顺序扫描', flush=True)
-                    return None  # 改动落在已跳过相册中部时回退完整顺序扫描。
-                return int(mid), len(seen), media_files
+                    return None, seen  # 改动落在已跳过相册中部时回退完整顺序扫描。
+                return (int(mid), len(seen), media_files), seen
             if previous.get('reply_to', '') != dict(item.reply_targets).get(mid, ''):
                 record.record_reply(mid, dict(item.reply_targets).get(mid, ''))
             seen.add(mid)
@@ -448,12 +512,17 @@ async def verify_resume_prefix(page: Page, peer_id: int, endpoint: int,
                 if item.album_id:
                     limit_album = item.album_id
                 else:
-                    return int(mid) - 1, len(seen), media_files
+                    return (int(mid) - 1, len(seen), media_files), seen
         if reached:
-            return endpoint, len(seen), media_files
+            return (endpoint, len(seen), media_files), seen
+        if offset == 1 << 32:
+            trusted = trusted_resume_prefix(record, existing_index, endpoint, max_messages)
+            if trusted is not None and trusted[1] >= len(seen):
+                print('[快速模式] 最新页已核对，按有效消息核验标记直接定位端点', flush=True)
+                return trusted, seen
         if offset != 1 << 32 and int(batch[-1].mid) >= offset:
             print('[快速模式] 端点分页未向旧端推进，改为顺序扫描', flush=True)
-            return None
+            return None, seen
         offset = int(batch[-1].mid)
 
 
@@ -514,24 +583,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def existing_media_index(root: Path, *, known_text_media: set[str] | None = None) -> dict[str, list[Path]]:
-    """按 Telegram 媒体 ID 索引已有文件，避免旧目录名导致重复下载。"""
-    result: dict[str, list[Path]] = {}
-    for path in root.rglob('*'):
-        match = re.match(r'^(?:\d{4}-\d{2}-\d{2}[-_]m|m)(\d+)_[1-9]\d*_(?:(?:document|photo|video|audio|animation|sticker)_)?\d+(?:[_.]|$)', path.name)
-        if (match and (path.suffix.lower() != '.txt' or
-                       (known_text_media is not None and match.group(1) in known_text_media))
-                and path.is_file() and path.stat().st_size > 0
-                and not re.search(r'\.part(?:\.\d+)?$', path.name)):
-            result.setdefault(match.group(1), []).append(path)
-    for mid, paths in result.items():
-        if len(paths) > 1:
-            numbered = sorted((media_version(path), path) for path in paths)
-            if [number for number, _ in numbered] == list(range(1, len(paths) + 1)):
-                result[mid] = [numbered[-1][1]]
-    return result
 
 
 def media_file_position(path: Path, mid: str) -> int | None:
@@ -737,12 +788,6 @@ def reusable_group_count(batch: list[Message], selected: set[str], published: Pa
     return reused
 
 
-def media_version(path: Path) -> int:
-    """未编号文件视为初版；只识别扩展名前的版本后缀。"""
-    match = re.search(r'\.v([1-9]\d*)(?=\.[^.]+$)', path.name)
-    return int(match.group(1)) if match else 0
-
-
 def numbered_media_path(path: Path, number: int) -> Path:
     stem = re.sub(r'\.v[1-9]\d*$', '', path.stem)
     return path.with_name(f'{stem}.v{number}{path.suffix}')
@@ -906,7 +951,7 @@ async def wait_for_login(page: Page, *, timeout: int = 300_000) -> None:
 async def open_group_from_chatlist(page: Page, expected: str) -> None:
     """深链接未装载聊天时，从已登录会话的聊天列表真实点击目标群。"""
     await page.goto('https://web.telegram.org/k/', wait_until='domcontentloaded')
-    await wait_for_login(page)
+    await wait_for_login(page, timeout=20_000)
     target = page.locator(f'#column-left a[href="#{expected}"]:visible').first
     if not await target.count():
         try:
@@ -934,7 +979,60 @@ async def open_group_from_chatlist(page: Page, expected: str) -> None:
         state='attached', timeout=45_000)
 
 
+def navigation_retryable(error: Exception) -> bool:
+    """只重试超时或明确的连接中断，不掩盖群号/访问权限/内容错误。"""
+    current = error
+    for _ in range(8):
+        if isinstance(current, (TimeoutError, BrowserTimeout)):
+            return True
+        if isinstance(current, BrowserError) and re.search(
+                r'net::ERR_(?:CONNECTION_RESET|CONNECTION_CLOSED|TIMED_OUT|NETWORK_CHANGED|'
+                r'INTERNET_DISCONNECTED|PROXY_CONNECTION_FAILED|CONNECTION_FAILED|EMPTY_RESPONSE)\b',
+                str(current)):
+            return True
+        if isinstance(current, BrowserError) and 'interrupted by another navigation to "chrome-error://' in str(current):
+            return True
+        current = current.__cause__
+        if current is None:
+            break
+    return False
+
+
+async def reset_group_navigation(page: Page) -> None:
+    """Chrome 错误页的迟到导航可能打断 about:blank，仅对该竞态再复位一次。"""
+    for attempt in range(2):
+        try:
+            await page.goto('about:blank', wait_until='commit', timeout=10_000)
+            return
+        except BrowserError as error:
+            if attempt or 'interrupted by another navigation to "chrome-error://' not in str(error):
+                raise
+            await page.wait_for_timeout(300)
+
+
 async def open_group(page: Page, url: str, *, require_message: bool = True) -> str:
+    """导航只使用短会话等待，总时限内最多重开一次同一群组。"""
+    expected = group_id(url)
+    for attempt in range(2):
+        started = time.monotonic()
+        detail(f'GROUP_OPEN_BEGIN peer={expected} attempt={attempt + 1}')
+        try:
+            title = await asyncio.wait_for(
+                _open_group_once(page, url, require_message=require_message), timeout=65)
+            detail(f'GROUP_OPEN_READY peer={expected} attempt={attempt + 1} '
+                   f'seconds={time.monotonic() - started:.2f}')
+            return title
+        except (BrowserError, RuntimeError, TimeoutError) as error:
+            detail(f'GROUP_OPEN_FAILED peer={expected} attempt={attempt + 1} '
+                   f'error={type(error).__name__} seconds={time.monotonic() - started:.2f}')
+            if attempt or page.is_closed() or not navigation_retryable(error):
+                raise
+            print('[群组连接] 页面等待或连接异常，正在重新打开本群（最多重试一次）', flush=True)
+            await reset_group_navigation(page)
+    raise AssertionError('群组导航应已返回或报错')
+
+
+async def _open_group_once(page: Page, url: str, *, require_message: bool = True) -> str:
     expected = group_id(url)
     current = urlsplit(page.url)
     on_target = (current.fragment == expected or current.fragment.startswith(expected + '_'))
@@ -945,7 +1043,7 @@ async def open_group(page: Page, url: str, *, require_message: bool = True) -> s
             # Web K 对跨群组的 hash 导航可能保持旧聊天；同一标签先卸载再打开。
             await page.goto('about:blank', wait_until='domcontentloaded')
         await page.goto(url, wait_until='domcontentloaded')
-        await wait_for_login(page)
+        await wait_for_login(page, timeout=20_000)
     if not (urlsplit(page.url).fragment == expected or
             urlsplit(page.url).fragment.startswith(expected + '_')):
         await page.goto('about:blank', wait_until='domcontentloaded')
@@ -1124,10 +1222,10 @@ async def iter_history(page: Page, limit: int | None, known_ids: set[str],
                 and isinstance(page.url, str)):
             # Web K 偶尔停在虚拟列表的顶部；从当前最旧消息前一 ID 重新定位。
             recovery_mid = oldest_mid
-            base_url = page.url.split('_', 1)[0]
+            base_url = page.url.split('?', 1)[0].split('_', 1)[0]
             route_id = server_target if server_target is not None else (oldest_mid & 0xFFFFFFFF) - 1
             detail(f'顶部未继续加载，尝试定位到 m{oldest_mid} 之前')
-            await page.goto(f'{base_url}_{route_id}', wait_until='domcontentloaded')
+            await open_message_route(page, base_url, route_id)
             await scroll.wait_for(state='attached', timeout=30_000)
             await page.wait_for_timeout(2_000)
             stale = 0
@@ -1224,6 +1322,13 @@ async def open_message_with_native_ui(page: Page, source_url: str, mid: str) -> 
         return False
 
 
+async def open_message_route(page: Page, source_url: str, mid: str | int) -> None:
+    """先卸载旧聊天，避免 Web K 的同文档导航把 message 参数恢复成旧群入口。"""
+    target = message_url(source_url, mid)
+    await page.goto('about:blank', wait_until='domcontentloaded')
+    await page.goto(target, wait_until='domcontentloaded')
+
+
 async def locate_message(page: Page, source_url: str, item: Message):
     """先使用原生界面定位旧消息；不可用时保留地址和可见历史回找。"""
     selector = message_bubble_selector(source_url, item.mid)
@@ -1252,10 +1357,9 @@ async def locate_message(page: Page, source_url: str, item: Message):
                                 return bubble
             except RuntimeError:
                 pass
-        route_id = str(int(item.mid) & 0xFFFFFFFF)
-        await page.goto(f'{source_url}_{route_id}', wait_until='domcontentloaded')
+        await open_message_route(page, source_url, item.mid)
         try:
-            await bubble.wait_for(state='attached', timeout=5_000)
+            await bubble.wait_for(state='attached', timeout=20_000)
         except BrowserTimeout:
             # Web K 可能丢弃消息 hash 却保留中途的虚拟列表；先重开群组起点。
             await page.goto('about:blank', wait_until='domcontentloaded')
@@ -1496,6 +1600,11 @@ async def save_one(page: Page, target, task: MediaTask,
     identity = {key: source[key] for key in ('peer', 'mid', 'kind', 'id', 'dc', 'thumb')}
     manifest = partial_root / f'{task.media_mid}.verified.jsonl'
     canonical = task.folder / canonical_media_name(task, source)
+    note_archive = (task.reuse_root.parent / '~archive' if task.reuse_root
+                    else partial_root / '~archive')
+    # TXT 原件与同名说明路径重合，先确认脚本所有权再归档，避免把说明当成原件。
+    if canonical.suffix.lower() == '.txt':
+        retire_failure_note(canonical, note_archive)
     existing, from_reuse = matching_existing_media(task, source, canonical, existing_index)
     version = 0
     async def resolve_existing_version():
@@ -1539,6 +1648,7 @@ async def save_one(page: Page, target, task: MediaTask,
                 await asyncio.to_thread(verified_digest, path, identity, manifest,
                                         sha256_file, known_digest=digest)
             existing_index[task.media_mid] = [path]
+            retire_failure_note(path, note_archive)
             return (('relocated' if old_folder else 'skipped', path, size, digest, old_folder), 0)
         if prior_version == 0:
             first = numbered_media_path(path, 1)
@@ -1557,6 +1667,8 @@ async def save_one(page: Page, target, task: MediaTask,
     final = canonical
     if version:
         final = numbered_media_path(final, version)
+    if final.suffix.lower() == '.txt' and final != canonical:
+        retire_failure_note(final, note_archive)
     if final.is_file() and final.stat().st_size > 0:
         raise RuntimeError(f'目标文件在下载期间已出现，未覆盖：{final}')
     if final.exists():
@@ -1599,6 +1711,10 @@ async def save_one(page: Page, target, task: MediaTask,
         await download_parts(partial,
                              lambda offset, limit: fetch_resume_part(page, source, offset, limit),
                              show_progress)
+    except RemoteFileError as error:
+        write_failure_note(final, task.media_mid, source['size'], error)
+        print(f'  [异常说明] m{task.media_mid} · 原件同名 TXT 已由脚本生成，保持未完成', flush=True)
+        raise
     finally:
         display.finish()
     if final.exists():
@@ -1608,6 +1724,7 @@ async def save_one(page: Page, target, task: MediaTask,
     await asyncio.to_thread(verified_digest, final, identity, manifest,
                             sha256_file, known_digest=saved_hash)
     existing_index[task.media_mid] = [final]
+    retire_failure_note(final, note_archive)
     return 'downloaded', final, size, saved_hash, None
 
 

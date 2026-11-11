@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from playwright.async_api import TimeoutError as BrowserTimeout, async_playwright
+from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout, async_playwright
 
 from telegg.browser import (BUBBLE, MediaTask, discover_media, existing_media_index,
                             is_transport_timeout,
@@ -24,11 +24,47 @@ from telegg.layout import Message, grouped, destination, group_folder, previous_
 from telegg.local_config import load_paths
 from telegg.errors import LocalDataError
 from telegg.browser import iter_history, ScanProgress
+from telegg.browser import navigation_retryable, reset_group_navigation
 
 TEST_ROOT = load_paths()['test_artifacts']
 
 
 class PublicationFailureTests(unittest.TestCase):
+    def test_navigation_reset_tolerates_one_late_chrome_error_page(self):
+        error = BrowserError('Navigation to "about:blank" is interrupted by another navigation to "chrome-error://chromewebdata/"')
+        page = MagicMock()
+        page.goto = AsyncMock(side_effect=[error, None])
+        page.wait_for_timeout = AsyncMock()
+        asyncio.run(reset_group_navigation(page))
+        self.assertEqual(page.goto.await_count, 2)
+        self.assertTrue(navigation_retryable(error))
+        page.goto = AsyncMock(side_effect=error)
+        with self.assertRaises(BrowserError):
+            asyncio.run(reset_group_navigation(page))
+        self.assertEqual(page.goto.await_count, 2)
+
+    def test_navigation_retry_is_bounded_and_does_not_retry_identity_failures(self):
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.goto = AsyncMock()
+        with (patch('telegg.browser._open_group_once', new_callable=AsyncMock,
+                    side_effect=[BrowserTimeout('synthetic timeout'), 'fixture']) as attempt,
+              patch('telegg.browser.detail')):
+            self.assertEqual(asyncio.run(open_group(page, 'https://web.telegram.org/k/#-1')), 'fixture')
+            self.assertEqual(attempt.await_count, 2)
+        with (patch('telegg.browser._open_group_once', new_callable=AsyncMock,
+                    side_effect=BrowserTimeout('persistent timeout')) as attempt,
+              self.assertRaises(BrowserTimeout)):
+            asyncio.run(open_group(page, 'https://web.telegram.org/k/#-1'))
+        self.assertEqual(attempt.await_count, 2)
+        with (patch('telegg.browser._open_group_once', new_callable=AsyncMock,
+                    side_effect=RuntimeError('页面跳转到其他群组')) as attempt,
+              self.assertRaisesRegex(RuntimeError, '其他群组')):
+            asyncio.run(open_group(page, 'https://web.telegram.org/k/#-1'))
+        self.assertEqual(attempt.await_count, 1)
+        self.assertTrue(navigation_retryable(BrowserTimeout('fixture')))
+        self.assertFalse(navigation_retryable(LocalDataError('fixture')))
+
     def test_timed_out_part_collects_late_driver_failure_without_committing_it(self):
         from telegg.browser import fetch_resume_part
 
@@ -86,6 +122,45 @@ class PublicationFailureTests(unittest.TestCase):
 
 
 class SessionEntryTests(unittest.TestCase):
+    def test_url_fallback_reaches_album_member_with_message_parameter(self):
+        async def scenario():
+            async with async_playwright() as playwright:
+                browser = await playwright.chromium.launch(channel='chrome', headless=True)
+                try:
+                    page = await browser.new_page()
+                    # 中性路由夹具仅响应当前 Web K 的 message 参数；无登录及真实正文/媒体。
+                    fixture = '''<div id="column-center"></div><script>
+                    const raw = Number(new URLSearchParams(location.hash.split('?')[1] || '').get('message'));
+                    if(raw) {
+                        const mid = 4294967296 + raw % 4294967296;
+                        const bubble = document.createElement('div');bubble.className = 'bubble';
+                        bubble.dataset.peerId = '-1';bubble.dataset.mid = Number(mid) - 1;
+                        const member = document.createElement('div');member.className = 'album-item';
+                        member.dataset.mid = mid;bubble.append(member);
+                        document.querySelector('#column-center').append(bubble);
+                    }
+                    // 模拟真实 Web K 中同文档路由被旧聊天入口覆盖，完整加载仍可定位。
+                    addEventListener('hashchange', () => {
+                        history.replaceState(null, '', '#-1');
+                        document.querySelector('#column-center').replaceChildren();
+                    });
+                    </script>'''
+                    await page.route('https://web.telegram.org/**', lambda route: route.fulfill(
+                        status=200, content_type='text/html', body=fixture))
+                    target = Message('4294967400', '', 1700000000, 0)
+                    source = 'https://web.telegram.org/k/#-1'
+                    await page.goto(source)
+                    await page.goto(source + '?message=104')
+                    self.assertEqual(await page.locator('.bubble').count(), 0)
+                    with patch('telegg.browser.visible_messages', new_callable=AsyncMock, return_value=[]):
+                        bubble = await locate_message(page, source, target)
+                    self.assertEqual(await bubble.count(), 1)
+                    self.assertEqual(await bubble.get_attribute('data-peer-id'), '-1')
+                    self.assertEqual(page.url, 'https://web.telegram.org/k/#-1?message=104')
+                finally:
+                    await browser.close()
+        asyncio.run(scenario())
+
     def test_native_navigation_requires_matching_peer_and_message(self):
         page = MagicMock()
         page.evaluate = AsyncMock(return_value=True)

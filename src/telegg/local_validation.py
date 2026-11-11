@@ -5,7 +5,9 @@ from pathlib import Path
 
 from .content_archive import content_payload
 from .errors import LocalDataError
+from .failure_notes import validate_failure_notes
 from .layout import destination, group_folder, grouped
+from .media_index import existing_media_index
 from .reply_groups import linked_group_names, parent_for
 from .verification_manifest import read_snapshot
 
@@ -67,7 +69,7 @@ def _check_manifest(folder, batch) -> None:
         raise LocalDataError(f'头像段清单成员或相册分组不符：{path}')
 
 
-def _check_links(root, record, by_mid) -> None:
+def _check_links(root, record, by_mid, *, allow_incomplete=False) -> None:
     for parent in root.glob('*关联组'):
         required = {(mid, str(source['reply_to'])) for mid, source in record.source_messages.items()
                     if source.get('reply_to') and by_mid.get(mid) == parent.name
@@ -79,7 +81,9 @@ def _check_links(root, record, by_mid) -> None:
             raise LocalDataError(f'关联清单格式错误：{parent}') from exc
         ids = {mid for manifest in parent.rglob('段内清单.json')
                for row in _read_json(manifest)['items'] for mid in row['message_ids']}
-        if not required or actual != required or any(a not in ids or b not in ids for a, b in actual):
+        # 暂存引用目标可以尚无文件，但必须属于已知关联元数据；成品则要求成员全部在场。
+        known = record.source_messages if allow_incomplete else ids
+        if not required or actual != required or any(a not in known or b not in known for a, b in actual):
             raise LocalDataError(f'关联清单引用关系不符：{parent}')
 
 
@@ -88,6 +92,13 @@ def validate_local_archive(root: Path, staging: Path, record, partials: Path,
     if not enabled:
         return
     print('[逐文件检查] 先只读核对已有路径与清单；异常即报错停止', flush=True)
+    for base in (root, staging):
+        validate_failure_notes(base)
+    text_media = {mid for mid, value in record.source_messages.items()
+                  if value.get('content_type') == 'document'}
+    for mid, paths in existing_media_index(root, staging, known_text_media=text_media).items():
+        if len(paths) > 1:
+            raise LocalDataError(f'同一消息存在重复媒体文件：m{mid}，数量 {len(paths)}')
     links = linked_group_names(record)
     by_mid = {}
     allowed_segments = set()
@@ -117,3 +128,4 @@ def validate_local_archive(root: Path, staging: Path, record, partials: Path,
             if manifest.parent not in allowed_segments:
                 raise LocalDataError(f'头像段目录不符合记录：{manifest.parent}')
     _check_links(root, record, by_mid)
+    _check_links(staging, record, by_mid, allow_incomplete=True)

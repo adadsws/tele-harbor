@@ -2,6 +2,8 @@
 
 本目录是 [项目规范](AGENT_CONTEXT.md) 的实测索引。编号可用于指定后续实测范围；列在目录中不代表已执行或已通过。
 
+交付前的五项优先顺序及通过标准统一见 [交付优先实测](AGENT_CONTEXT.md#交付优先实测)：浏览器独立核对、三群已有范围完整性、关联发布与空目录、不同进度交叉双模式、真实端点与速度。它们不替代本目录其他适用项目，也不表示现有证据已全部满足。
+
 ## 选择与执行
 
 ```powershell
@@ -20,6 +22,60 @@ python tests/run_live_matrix.py --run --resume "<项目根目录>/~temp/live-mat
 每个普通自动场景分别用 `fast`、`exact` 从独立副本执行实际 BAT；R01 固定包含 fast→exact、exact→fast 的可信断点切换，以及损坏成品 fast→exact 的拒绝验证，不受单模式选择限制。
 
 续跑保留旧结果和失败现场，不物理删除文件。相同程序及场景版本下已通过的普通项目跳过；代码或构造器变化后选中项重新验收。试验期间若原下载任务同时写入原数据，保护核对会失败，不可据此宣称原件未变。
+
+独立的遗留场景入口：
+
+```powershell
+python tests/prepare_live_audits.py --run
+python tests/live_network_audit.py --suite "<上一步批次>" --source-group 3
+python tests/live_archive_fault_audit.py --suite "<批次>" --baseline "<批次>/baseline"
+python tests/live_archive_fault_audit.py --suite "<批次>" --baseline "<批次>/baseline" --case association_missing duplicate_media
+python tests/live_remote_file_audit.py --suite "<批次>" --source-group 2 --mid <待查原消息号> --case original-thumbnail original-4k neighbor-4k
+python tests/live_resume_audit.py --suite "<批次>" --source-group 3 --mid <已有失败消息号> --max-new-mib 768
+python tests/live_failure_notes_audit.py --suite "<批次>"
+python tests/live_failure_notes_audit.py --suite "<批次>" --legacy-registry
+```
+
+五项优先实测入口（默认无可见窗口）：
+
+```powershell
+python tests/run_priority_checks.py --prepare --hash
+python tests/run_priority_checks.py --suite "<优先实测批次>" --observe-server --observe-dom --observe-replies
+python tests/run_priority_checks.py --suite "<优先实测批次>" --observe-latest
+python tests/run_priority_checks.py --suite "<优先实测批次>" --review
+python tests/run_priority_checks.py --suite "<优先实测批次>" --check-source
+python tests/run_priority_checks.py --suite "<优先实测批次>" --runtime-suite "<prepare_live_audits 批次>" --publication --staging-faults --deep-endpoint
+```
+
+盘点取指定旧重建清单中的媒体 ID，与成品、暂存及完成记录逐项核对，独立重读全部现有媒体 SHA-256；仍在旧归档中的候选副本也比对哈希。重新获取已下载范围元数据时同时检查漏记的远端普通消息，服务消息单列，不算媒体遗漏。独立 Chrome 只提取 ID、日期、类型和 DOM 结构，不导入产品导航或分组函数；头像段边界与相册成员对照实际清单，引用必须实际点击后确认同群目标可见。没有真实引用的群记录不适用，不能制造一条 Telegram 引用替代。
+
+`--observe-latest` 只获取每群最新一页，记录真实新增普通消息和相册数，避免为等新增反复扫描旧区间。读取成功不代表首次增量下载通过，`incremental_download_verified` 仍为 false。DOM `data-timestamp` 只留诊断偏移统计；日期依据独立服务器原始时间核对，不能用 DOM 秒值覆盖可信日期。
+
+关联发布用三个真实文字头像段的文件副本，修改副本元数据构造两跳引用；它验证发布逻辑，不冒称远端真实多跳案例。目标缺件时整个分量留暂存，恢复后逐文件核对三段、上层关联 JSON、内容哈希及活动空目录。暂存关联 JSON 缺失、损坏、错链分别执行 exact，必须先报错且文件与记录未改动。
+
+深端点采用部分媒体副本及完成记录模拟大量已完成文件：明确保留 `partial_copies_unverified`，不称这些占位副本完整。选中缺件真实联网下载，独立核对所有提交分片、大小及最终哈希；同副本再次制造缺口，确认补标记后直接跳端点。与原件比对只适用于有可信原件的目标。双模式耗时比较另取矩阵 D00/D01 的同一起始状态与完整文件样本，不拿部分副本的 exact 拒绝结果比较速度。自然外部新增相册仍需另行等待真实条件，不以人工缺口或首次下载旧照片替代。
+
+共享运行环境的 publication、staging-faults、deep-endpoint 必须顺序执行，避免互相改写测试配置；独立矩阵和观察器使用各自 Chrome 副本。证据与仍缺项见 [本轮计划](plans/2026-11-10-five-priority-live.md)。
+
+准备入口选取原记录中已完整下载的小样本，仅复制媒体到隔离复用区，真实 BAT 新建状态；原件保护和样本哈希核对通过才算准备成功。默认最大 80 MiB，可指定 `--source-group`。服务器最新样本变化会触发范围保护，不静默扩大下载。
+
+N00 网络入口需要一个可用的本机 HTTP 代理（默认端口 10808，可用 `--upstream-port` 修改）；测试再套一层独立代理，只切断本批连接，不修改系统网络。L04/L05 入口实际运行逐文件 BAT，对缺失/损坏清单、空目录和重复文件逐一验收；关联 JSON 使用现有最小真实关联分量的副本，先验证基线有效再造故障。500 诊断仅输出类型、字节数和时长，遇到限速即停止；原生调用超时会关闭隔离上下文，诊断完成不代表原件恢复。
+
+旧消息回退链接的预测样例在真实 Chrome 中运行中性路由夹具，先复现同文档路由丢失消息参数，再验证产品卸载旧页后，以 `message` 原始编号定位正确群的相册成员；它属于离线验收，不替代 G05 的真实 Telegram 定位。插件调试连接中断、地址改变或旧气泡仍在 DOM 中，均不能算实际跳转成功。插件命令拆成单步，慢调用给足时限；不要把工具自身 30 秒中断误当作浏览器断线。实测见 [网页原消息定位](finished_plans/2026-11-10-web-message-navigation.md)。
+
+已有失败断点续传入口只复制指定 `.part` 和提交日志；先检查剩余量上限，再从可信边界续传并独立复读最终 SHA-256。恢复文件只留测试暂存，原正式文件和记录保持不变，不能把副本恢复自动算作正式数据已修复。
+
+N03 异常说明入口使用真实 BAT 和登录副本，在隔离运行环境中注入明确标记的服务器文件错误，验收快速模式自动说明、失败状态和索引排除，再关闭注入，以逐文件模式真实联网下载并独立复读哈希，确认说明逐文件归档。注入错误不算真实 Telegram 故障；真实 500 样例另用续传入口重试。离线预测样例另覆盖真实 TXT 附件、双重后缀、用户同名文件、说明被编辑和登记损坏。
+
+`--legacy-registry` 仅在副本中将脚本生成的新登记改成旧前缀格式，再执行 exact，验证旧登记的只读识别及恢复后的安全迁移、归档。正常生成及归档名称不得带百分号标记；新旧登记冲突、损坏或内容被修改应保留现场并报错，不得静默合并。
+
+代理运行均遵守当次窗口要求；这些隔离入口默认 hidden，正常用户 BAT 仍默认可见。可见模式的一次实际窗口验收、当前新增证据及尚缺条件见 [遗留闭环](finished_plans/2026-11-10-remaining-live-verification.md)。
+
+## 已知损坏资源的实测边界
+
+后续专项恢复实测须先检查配置中 `scan_records` 上一级状态目录里的 `live-test-exclusions.json`。它只在本机记录 `version: 1` 和 `resources` 列表，每项包含 `peer`、`mid`、`classification: damaged`、用户处置原因；真实值不得写入公开配置或文档。原件诊断及已有失败断点续传两个入口会在打开浏览器、复制分片或请求媒体前拒绝已排除项，原始/内部消息号统一匹配。其他实测选样同样避开该资源，结构盘点仍保留其已知未下载事实。
+
+该清单不改变正常下载程序：正常运行遇到它仍照常尝试，再按通用错误流程跳过、提示并留下原件同名 TXT；正式结果保持 failed，不设永久黑名单，不虚报 downloaded。某个资源被排除后，不再专项重试、补查存储原因或以恢复它作为交付条件；重新纳入须有用户明确的新要求。通用异常行为可用其他健康文件的隔离副本注入错误来验收。
 
 ## 类型与预期
 
@@ -56,6 +112,7 @@ python tests/run_live_matrix.py --run --resume "<项目根目录>/~temp/live-mat
 | N00 | network | 受控中断后重启，实际断网后同进程重连 | 单独有界实测 | 可信边界恢复；两种中断分别验收 | 可信边界恢复；两种中断分别验收 |
 | N01 | network | 服务器 5xx、限流及文件引用刷新 | 单独有界实测 | 有界失败，未完成不假报成功 | 有界失败，未完成不假报成功 |
 | N02 | network | 浏览器关闭、未登录和进群超时 | 单独有界实测 | 明确失败并保存进度 | 明确失败并保存进度 |
+| N03 | network | 原件同名 TXT 自动说明及恢复归档 | 单独有界实测 | 脚本生成、未完成、索引排除 | 实际恢复后归档；本地冲突只读报错 |
 | R00 | runtime | 真实 BAT 环境准备、参数、菜单与退出码 | 单独有界实测 | 实际入口、交互和退出码符合预期 | 实际入口、交互和退出码符合预期 |
 | R01 | runtime | fast→exact / exact→fast 连续切换 | 自动副本实测 | 连续切换，状态与哈希保持正确 | 连续切换，状态与哈希保持正确 |
 | R02 | runtime | 快速端点、自然新增相册及双模式耗时 | 单独有界实测 | 接近未完成端点再下载 | 选中范围逐文件哈希 |
@@ -95,4 +152,4 @@ R00 同时包含 CMD 显示子项：当前消息只显示群内日期、当前�
 
 这些产物可能含本机路径、群号、原始文件名及登录资料，只留本机，不纳入公开 Git。复建入口为本页的 `tests/run_live_matrix.py` 命令；批次内文件不可当作原下载数据使用。
 
-本轮实际结果见 [进度矩阵验收](finished_plans/2026-11-10-download-progress-matrix.md)：19 类自动场景、42 种组合按最新有效证据符合预期，其中 12 项为路径修复后复测；其余单独实测类型不得据此记为已通过。历史阻塞与未验证范围见 [遗留清单](plans/2026-11-08-remaining-verification.md)。
+历史矩阵证据见 [进度矩阵验收](finished_plans/2026-11-10-download-progress-matrix.md)：19 类自动场景、42 种组合合并当时两个实现版本的有效证据后符合预期，其中 12 项为路径修复后复测。后续代码改动须按影响范围复核，不能将该记录写成最新版本全场景重跑通过。其他阶段证据见 [文档导航](README.md)，当前未完成与未验证范围见 [遗留清单](plans/2026-11-08-remaining-verification.md)。

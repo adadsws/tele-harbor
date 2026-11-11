@@ -43,6 +43,7 @@ CASES = (
     Case('N00', 'network', '受控中断后重启，实际断网后同进程重连', 'manual', 'resume', 'resume', False),
     Case('N01', 'network', '服务器 5xx、限流及文件引用刷新', 'manual', 'bounded_failure', 'bounded_failure', False),
     Case('N02', 'network', '浏览器关闭、未登录和进群超时', 'manual', 'explicit_failure', 'explicit_failure', False),
+    Case('N03', 'network', '原件同名 TXT 自动说明及恢复归档', 'manual', 'failure_note', 'recovery_archive', False),
     Case('R00', 'runtime', '真实 BAT 环境准备、参数、菜单与退出码', 'manual', 'entry', 'entry', False),
     Case('R01', 'runtime', 'fast→exact / exact→fast 连续切换', 'switch', 'switch', 'switch'),
     Case('R02', 'runtime', '快速端点、自然新增相册及双模式耗时', 'manual', 'endpoint', 'hash_range', False),

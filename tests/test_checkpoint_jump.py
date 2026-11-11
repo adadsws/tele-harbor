@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 from telegg.browser import completed_source, resume_endpoint, resume_title_anchor, verify_resume_prefix
 from telegg.browser import resume_avatar_prefix
+from telegg.browser import verified_group_signature
+from telegg.scan_record import FoundMedia
 from telegg.layout import Message
 
 
@@ -21,6 +23,94 @@ def message(number: int, kind: str = 'photo') -> Message:
 
 
 class CheckpointJumpTests(unittest.TestCase):
+    def marked_prefix(self):
+        rows = [message(n) for n in range(201, 99, -1)]
+        sources = {r.mid: {'timestamp': r.timestamp, 'text': '', 'has_media': True,
+                          'content_type': 'photo', 'bubble_mid': r.mid} for r in rows}
+        paths = {r.mid: [Path('fixture') / (r.mid + '.bin')] for r in rows}
+        found = {r.mid: FoundMedia(r.mid, 1, r.mid, 1) for r in rows}
+        record = SimpleNamespace(source_messages=sources, messages={r.mid: r for r in rows},
+            media=found, results={mid: {'status': 'downloaded', 'naming_revision': 3, 'detail': str(p[0])}
+                                   for mid, p in paths.items()},
+            content_files={mid: 'fixture-content' for mid in paths}, verified_messages={})
+        for row in rows:
+            record.verified_messages[row.mid] = verified_group_signature([row], {row.mid: {row.mid: found[row.mid]}})
+        record.mark_message_verified = lambda mid, signature: record.verified_messages.update({mid: signature})
+        return rows, record, paths
+
+    def check_marked(self, record, paths, rows, limit=None):
+        async def history(_page, _peer, offset, _request):
+            return rows[:2] if offset == BASE else rows[2:]
+        with patch('telegg.browser.server_history_with_recovery', side_effect=history) as fetch:
+            result = asyncio.run(verify_resume_prefix(None, -1000000001, BASE + 100, record, paths, limit))
+        return result, fetch.await_count
+
+    def test_valid_marks_jump_after_one_latest_page_without_file_io(self):
+        rows, record, paths = self.marked_prefix()
+        with patch.object(Path, 'stat', side_effect=AssertionError('must not stat trusted files')):
+            result, calls = self.check_marked(record, paths, rows)
+        self.assertEqual(result, (BASE + 100, 101, 101))
+        self.assertEqual(calls, 1)
+
+    def test_old_prefix_without_marks_is_checked_then_promoted(self):
+        rows, record, paths = self.marked_prefix()
+        record.verified_messages.clear()
+        result, calls = self.check_marked(record, paths, rows)
+        self.assertEqual(result, (BASE + 100, 101, 101))
+        self.assertEqual(calls, 2)
+        self.assertIn(str(BASE + 150), record.verified_messages)
+        self.assertEqual(self.check_marked(record, paths, rows)[1], 1)
+
+    def test_stale_marker_is_not_trusted(self):
+        rows, record, paths = self.marked_prefix()
+        record.verified_messages[str(BASE + 150)] = '0' * 64
+        self.assertEqual(self.check_marked(record, paths, rows)[1], 2)
+
+    def test_missing_indexed_file_does_not_get_skipped_by_mark(self):
+        rows, record, paths = self.marked_prefix()
+        paths.pop(str(BASE + 180))
+        result, calls = self.check_marked(record, paths, rows)
+        self.assertEqual(result, (BASE + 180, 21, 21))
+        self.assertEqual(calls, 2)
+
+    def test_new_latest_message_is_found_before_mark_shortcut(self):
+        rows, record, paths = self.marked_prefix()
+        result, calls = self.check_marked(record, paths, [message(202), *rows])
+        self.assertEqual(result, (BASE + 202, 0, 0))
+        self.assertEqual(calls, 1)
+
+    def test_marked_shortcut_respects_limit(self):
+        rows, record, paths = self.marked_prefix()
+        result, calls = self.check_marked(record, paths, rows, 3)
+        self.assertEqual(result, (BASE + 198, 3, 3))
+        self.assertEqual(calls, 1)
+
+    def test_marked_shortcut_keeps_whole_album_at_limit(self):
+        from dataclasses import replace
+        from telegg.browser import combine_server_album
+        rows, record, paths = self.marked_prefix()
+        rows[2:5] = [replace(r, album_id='fixture-album') for r in rows[2:5]]
+        bubble = combine_server_album(rows[2:5])
+        for row in rows[2:5]:
+            record.source_messages[row.mid]['bubble_mid'] = bubble.mid
+            record.messages.pop(row.mid)
+        record.messages[bubble.mid] = bubble
+        for index, row in enumerate(reversed(rows[2:5]), 1):
+            record.media[row.mid] = FoundMedia(bubble.mid, index, row.mid, 1)
+        media = {r.mid: record.media[r.mid] for r in rows[2:5]}
+        record.verified_messages[bubble.mid] = verified_group_signature([bubble], {bubble.mid: media})
+        result, calls = self.check_marked(record, paths, rows, 3)
+        self.assertEqual(result, (BASE + 196, 5, 5))
+        self.assertEqual(calls, 1)
+
+    def test_changed_latest_album_is_found_before_cached_jump(self):
+        from dataclasses import replace
+        rows, record, paths = self.marked_prefix()
+        rows[0] = replace(rows[0], album_id='new-album')
+        result, calls = self.check_marked(record, paths, rows)
+        self.assertEqual(result, (BASE + 201, 0, 0))
+        self.assertEqual(calls, 1)
+
     def test_completed_prefix_checks_indexed_path_without_per_file_io(self):
         mid = str(BASE + 104)
         path = Path('fixture-output/correct/file.bin')

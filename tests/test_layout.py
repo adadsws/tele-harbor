@@ -4,10 +4,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from telegg.layout import Message, destination, group_folder, group_id, group_root, grouped, item_folder
+from telegg.layout import Message, destination, group_folder, group_id, group_root, grouped, item_folder, message_url
 
 
 class LayoutTests(unittest.TestCase):
+    def test_message_url_normalizes_raw_and_internal_ids(self):
+        source = 'https://web.telegram.org/k/#-1000000005'
+        expected = source + '?message=104'
+        self.assertEqual(message_url(source, 104), expected)
+        self.assertEqual(message_url(source, '4294967400'), expected)
+
+    def test_message_url_rejects_invalid_ids_and_foreign_origins(self):
+        for mid in ('0', '-1', '4294967296', '1&message=2', 'invalid'):
+            with self.subTest(mid=mid), self.assertRaises(ValueError):
+                message_url('https://web.telegram.org/k/#-1', mid)
+        with self.assertRaises(ValueError):
+            message_url('https://example.com/#-1', '104')
+
     def test_group_folder_ignores_text(self):
         short = Message('10', 'abcdefghijklmnopqrst', 1700000000, 1)
         long = Message('11', 'abcdefghijklmnopqrstu', 1700000000, 1)

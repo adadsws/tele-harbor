@@ -37,6 +37,22 @@ def group_id(url: str) -> str:
     return fragment
 
 
+def message_url(source_url: str, mid: str | int) -> str:
+    """URL 使用服务器原始消息号，原生 setInnerPeer 则使用内部消息号。
+
+    依据 Telegram Web K appImManager.onHashChangeUnsafe，2026-11-10 核对：
+    https://github.com/morethanwords/tweb/blob/master/src/lib/appImManager.ts
+    """
+    group_id(source_url)
+    text = str(mid)
+    if not text.isdecimal() or int(text) <= 0:
+        raise ValueError('消息号必须为正整数')
+    number = int(text) % (1 << 32)
+    if not number:
+        raise ValueError('服务器消息号不能为零')
+    return f'{source_url}?message={number}'
+
+
 def group_root(output: Path, title: str, identity: str) -> Path:
     """群名变化时继续复用唯一的既有群组目录，避免重复下载。"""
     desired = output / f'{safe_name(title, 70)} [{identity}]'

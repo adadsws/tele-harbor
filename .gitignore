@@ -1,21 +1,25 @@
+# 本机 Python 环境及账号会话不得进入版本库。
 .venv/
 .venv-browser/
 __pycache__/
+# pytest 默认生成的工具原地缓存。
+/.pytest_cache/
 *.pyc
 *.session
 *.session-journal
 .local/
+# 每台电脑的群组与数据路径，不提交或发布。
 /config/config.local.json
-/downloads/
-/downloaded/
-/downloading/
-/~temp/
-/~archive/
-/~outputs-intermediate/
-/~outputs-final/
+# 可由运行重新生成的过程与交付输出不进入本地 Git。
+~outputs-intermediate/
+~outputs-final/
+~temp/
+# 本轮归档含内部实测记录和旧测试数据，只保留在本机。
+# 兼容手动指定项目内下载目录时的本机数据。
+downloads/
+downloaded/
+downloading/
 /.downloads.telegg-partials/
 /.downloaded.telegg-partials/
 /.downloaded.telegg-staging/
-
-# Tool-local pytest cache.
-/.pytest_cache/
+/~archive/
