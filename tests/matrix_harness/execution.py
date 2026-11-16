@@ -5,19 +5,25 @@ import subprocess
 import time
 
 
-def run_bat(runtime, log, peer, mode, allowed, timeout=240, *, debug_window='hidden', limit=1):
+def run_bat(runtime, log, peer, mode, allowed, timeout=240, *, debug_window='hidden', limit=1,
+             input_bytes=b'\n', extra_args=()):
     before = set((runtime / '~temp/logs').glob('telegg-*.log'))
     started = time.monotonic()
     stopped = None
     first_transfer = first_network = None
     env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}
     with log.open('wb') as stream:
-        process = subprocess.Popen(['cmd', '/d', '/c', 'download.bat',
-            f'https://web.telegram.org/k/#{peer}', '--limit', str(limit), '--verify', mode,
-            '--debug-window', debug_window],
+        args = ['cmd', '/d', '/c', 'download.bat']
+        # None 用真实菜单；列表用于多个真实群组，既有单群调用保持兼容。
+        peers = [] if peer is None else peer if isinstance(peer,list) else [peer]
+        args.extend(f'https://web.telegram.org/k/#{identity}' for identity in peers)
+        if limit is not None:
+            args.extend(['--limit',str(limit)])
+        args.extend(['--verify',mode,'--debug-window',debug_window,*extra_args])
+        process = subprocess.Popen(args,
             cwd=runtime, env=env, stdin=subprocess.PIPE, stdout=stream, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW if debug_window == 'hidden' else 0)
-        process.stdin.write(b'\n')
+        process.stdin.write(input_bytes)
         process.stdin.close()
         while process.poll() is None:
             time.sleep(.25)

@@ -6,7 +6,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout,redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -55,7 +55,7 @@ class GroupMenuTests(unittest.TestCase):
         self.assertEqual(self.menu(['4'])[0], [FIRST, SECOND, THIRD])
         self.assertIsNone(self.menu(['0'])[0])
 
-    def test_one_numeric_option_toggles_only_two_modes(self):
+    def test_one_numeric_option_cycles_download_and_read_only_modes(self):
         groups = [ConfiguredGroup('-1000000005'), ConfiguredGroup('-1000000003'),
                   ConfiguredGroup('-1000000004')]
         changed = []
@@ -66,9 +66,11 @@ class GroupMenuTests(unittest.TestCase):
                                      lambda _prompt: next(answers),
                                      on_verify_change=changed.append)
         self.assertEqual(selected, [FIRST])
-        self.assertEqual(changed, ['exact', 'fast', 'exact'])
-        self.assertIn('7. 切换模式（当前：快速模式）', output.getvalue())
-        self.assertIn('7. 切换模式（当前：逐文件检查模式）', output.getvalue())
+        self.assertEqual(changed, ['exact', 'extras', 'fast'])
+        self.assertIn('7. 切换模式（当前：快速模式（不检查缺失/额外））', output.getvalue())
+        self.assertIn('7. 切换模式（当前：逐文件下载（检查缺失/额外））', output.getvalue())
+        self.assertIn('7. 切换模式（当前：检查缺失和额外文件（不下载新内容））', output.getvalue())
+        self.assertIn('1. 检查 群组 -1000000005', output.getvalue())
 
     def test_live_names_appear_without_changing_group_ids(self):
         groups = [ConfiguredGroup('-1000000005'), ConfiguredGroup('-1000000003')]
@@ -201,6 +203,133 @@ class GroupMenuTests(unittest.TestCase):
               self.assertRaisesRegex(ValueError, 'visible')):
             asyncio.run(run([]))
         browser.assert_not_called()
+
+    def test_three_modes_differ_only_in_new_download_and_fast_skips_review(self):
+        for mode in ('fast','exact','extras'):
+            with self.subTest(mode=mode):
+                page,context=AsyncMock(),AsyncMock();context.pages=[page]
+                manager=MagicMock();manager.__aenter__=AsyncMock(return_value=SimpleNamespace(chromium=SimpleNamespace(
+                    launch_persistent_context=AsyncMock(return_value=context))))
+                manager.__aexit__=AsyncMock(return_value=None)
+                base=Path(__file__).parents[1]/'~temp/tests'/('mode-'+mode)
+                args=argparse.Namespace(groups=[FIRST],output=base/'output',limit=None,dry_run=False,
+                    audit_messages=None,full_scan=False,login_only=False,check_extra_files=mode=='extras',
+                    debug_window='hidden',verify=mode if mode!='extras' else 'fast')
+                events=[]
+                async def download(*args,**kwargs):events.append('download');return (1,0,1,0)
+                async def finished(*args,**kwargs):events.append('confirm');return (0,False)
+                with (patch('telegg.__main__.arguments',return_value=args),
+                      patch('telegg.__main__.load_paths',return_value={'output':base/'output','staging':base/'staging',
+                          'partials':base/'partials','chrome_profile':base/'profile'}),
+                      patch('telegg.__main__.load_groups',return_value=[ConfiguredGroup('-1000000005')]),
+                      patch('telegg.__main__.async_playwright',return_value=manager),
+                      patch('telegg.__main__.wait_for_login',new_callable=AsyncMock),
+                      patch('telegg.__main__.inspect_group',new_callable=AsyncMock,return_value=SimpleNamespace()) as inspect,
+                      patch('telegg.__main__.finish_review',side_effect=finished) as finish,
+                      patch('telegg.__main__.download_group',side_effect=download) as get,
+                      redirect_stdout(io.StringIO())):
+                    self.assertEqual(asyncio.run(run([])),0)
+                if mode=='fast':
+                    inspect.assert_not_awaited();finish.assert_not_called();self.assertEqual(events,['download'])
+                else:
+                    finish.assert_called_once()
+                    self.assertEqual(events,['download','confirm'] if mode=='exact' else ['confirm'])
+                    self.assertEqual(get.call_count,int(mode=='exact'))
+
+    def test_failed_initial_review_is_not_repeated_at_workflow_end(self):
+        from telegg.errors import LocalDataError
+        for mode in ('exact','extras'):
+            page,context=AsyncMock(),AsyncMock();context.pages=[page]
+            manager=MagicMock();manager.__aenter__=AsyncMock(return_value=SimpleNamespace(chromium=SimpleNamespace(
+                launch_persistent_context=AsyncMock(return_value=context))))
+            manager.__aexit__=AsyncMock(return_value=None)
+            base=Path(__file__).parents[1]/'~temp/tests/review-failed'
+            args=argparse.Namespace(groups=[FIRST],output=base/'output',limit=None,dry_run=False,
+                audit_messages=None,full_scan=False,login_only=False,check_extra_files=mode=='extras',
+                debug_window='hidden',verify='exact')
+            with (self.subTest(mode=mode),patch('telegg.__main__.arguments',return_value=args),
+                  patch('telegg.__main__.load_paths',return_value={'output':base/'output','staging':base/'staging',
+                      'partials':base/'partials','chrome_profile':base/'profile'}),
+                  patch('telegg.__main__.load_groups',return_value=[ConfiguredGroup('-1000000005')]),
+                  patch('telegg.__main__.async_playwright',return_value=manager),
+                  patch('telegg.__main__.wait_for_login',new_callable=AsyncMock),
+                  patch('telegg.__main__.inspect_group',new_callable=AsyncMock,side_effect=LocalDataError('neutral error')) as inspect,
+                  patch('telegg.__main__.finish_review',new_callable=AsyncMock) as finish,
+                  patch('telegg.__main__.download_group',new_callable=AsyncMock) as download,
+                  redirect_stdout(io.StringIO()),redirect_stderr(io.StringIO())):
+                self.assertEqual(asyncio.run(run([])),1)
+            inspect.assert_awaited_once();finish.assert_not_awaited();download.assert_not_awaited()
+
+    def test_extra_file_entry_reports_paths_without_downloading(self):
+        page, context = AsyncMock(), AsyncMock()
+        context.pages = [page]
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(return_value=SimpleNamespace(chromium=SimpleNamespace(
+            launch_persistent_context=AsyncMock(return_value=context))))
+        manager.__aexit__ = AsyncMock(return_value=None)
+        base = Path(__file__).parents[1] / '~temp/tests/extra-cli'
+        args = argparse.Namespace(groups=[FIRST], output=base / 'output', limit=None,
+                                  dry_run=False, audit_messages=None, full_scan=False,
+                                  login_only=False, check_extra_files=True, debug_window='hidden')
+        output = io.StringIO()
+        with (patch('telegg.__main__.arguments', return_value=args),
+              patch('telegg.__main__.load_paths', return_value={
+                  'output': base / 'output', 'staging': base / 'staging', 'partials': base / 'partials',
+                  'chrome_profile': base / 'profile'}),
+              patch('telegg.__main__.load_groups', return_value=[ConfiguredGroup('-1000000005')]),
+              patch('telegg.__main__.async_playwright', return_value=manager),
+              patch('telegg.__main__.wait_for_login', new_callable=AsyncMock),
+              patch('telegg.__main__.inspect_group', new_callable=AsyncMock,
+                    return_value=SimpleNamespace(extras=[base/'output/extra.bin'])) as check,
+              patch('telegg.__main__.finish_review',new_callable=AsyncMock,return_value=(0,False)) as finish,
+              patch('telegg.__main__.download_group', new_callable=AsyncMock) as download,
+              patch('telegg.__main__.audit_messages', new_callable=AsyncMock) as audit,
+              redirect_stdout(output)):
+            self.assertEqual(asyncio.run(run([])), 0)
+        check.assert_awaited_once()
+        download.assert_not_awaited()
+        audit.assert_not_awaited()
+        finish.assert_awaited_once()
+        self.assertEqual(finish.call_args.args[1][0].extras,[base/'output/extra.bin'])
+        self.assertNotIn('新下载', output.getvalue())
+
+    def test_extra_file_entry_rejects_range_or_download_options_before_browser(self):
+        for option, value in [('limit', 1), ('dry_run', True), ('full_scan', True),
+                              ('audit_messages', 1), ('login_only', True)]:
+            args = argparse.Namespace(groups=[], limit=None, audit_messages=None,
+                dry_run=False, full_scan=False, login_only=False, check_extra_files=True)
+            setattr(args, option, value)
+            with (self.subTest(option=option), patch('telegg.__main__.arguments', return_value=args),
+                  patch('telegg.__main__.async_playwright') as browser,
+                  self.assertRaisesRegex(ValueError, '不可与')):
+                asyncio.run(run([]))
+            browser.assert_not_called()
+
+    def test_layout_migration_preview_never_calls_downloader(self):
+        page, context = AsyncMock(), AsyncMock(); context.pages = [page]
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(return_value=SimpleNamespace(chromium=SimpleNamespace(
+            launch_persistent_context=AsyncMock(return_value=context))))
+        manager.__aexit__ = AsyncMock(return_value=None)
+        base = Path(__file__).parents[1]/'~temp/tests/migration-cli'
+        args = argparse.Namespace(groups=[FIRST], output=base/'output', limit=None,
+            audit_messages=None, dry_run=True, full_scan=False, login_only=False,
+            migrate_standalone_layout=True, debug_window='hidden')
+        paths = {'output':base/'output', 'staging':base/'staging', 'partials':base/'partials',
+                 'scan_records':base/'scans', 'chrome_profile':base/'profile'}
+        output = io.StringIO()
+        with (patch('telegg.__main__.arguments', return_value=args),
+              patch('telegg.__main__.load_paths', return_value=paths),
+              patch('telegg.__main__.async_playwright', return_value=manager),
+              patch('telegg.__main__.wait_for_login', new_callable=AsyncMock),
+              patch('telegg.__main__.migrate_group_layout', new_callable=AsyncMock,
+                    return_value=(3, base/'plan.json')) as migrate,
+              patch('telegg.__main__.download_group', new_callable=AsyncMock) as download,
+              redirect_stdout(output)):
+            self.assertEqual(asyncio.run(run([])), 0)
+        migrate.assert_awaited_once_with(page, FIRST, paths, apply=False)
+        download.assert_not_awaited()
+        self.assertIn('迁移预览', output.getvalue())
 
 
 if __name__ == '__main__':

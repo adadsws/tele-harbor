@@ -40,8 +40,9 @@ class LayoutTests(unittest.TestCase):
         second = destination(root, *groups[0], messages[1])
         single = destination(root, *groups[1], messages[2])
         self.assertEqual(first, second)
-        self.assertEqual(first.name, group_folder(messages[0]))
-        self.assertEqual(single.name, '[From_2023-11-15-m3]')
+        self.assertEqual(first.parent.name, group_folder(messages[0]))
+        self.assertEqual(single.parent.name, '[From_2023-11-15-m3]')
+        self.assertEqual(single.name, '2023-11-15-首个group前')
 
     def test_album_caption_uses_caption_source_mid_after_entire_album(self):
         album = Message('244', '#第44期', 1793121479, 10,
@@ -56,12 +57,12 @@ class LayoutTests(unittest.TestCase):
         anchor, batch = grouped(messages)[0]
         self.assertEqual(anchor.mid, '4')
         self.assertNotEqual(item_folder(messages[0]), item_folder(messages[1]))
-        self.assertEqual(destination(Path('out'), anchor, batch, messages[0]), Path('out/[From_2023-11-15-m4]'))
-        self.assertEqual(destination(Path('out'), anchor, batch, messages[1]), Path('out/[From_2023-11-15-m4]'))
+        self.assertEqual(destination(Path('out'), anchor, batch, messages[0]), Path('out/[From_2023-11-15-m4]/2023-11-15-首个group前'))
+        self.assertEqual(destination(Path('out'), anchor, batch, messages[1]), Path('out/[From_2023-11-15-m4]/2023-11-15-首个group前'))
         single_anchor, single_batch = grouped(messages[:1])[0]
         self.assertEqual(single_anchor.mid, '4')
         self.assertEqual(destination(Path('out'), single_anchor, single_batch, messages[0]),
-                         Path('out/[From_2023-11-15-m4]'))
+                         Path('out/[From_2023-11-15-m4]/2023-11-15-首个group前'))
 
     def test_urls(self):
         self.assertEqual(group_id('https://web.telegram.org/k/#-1000000005'), '-1000000005')

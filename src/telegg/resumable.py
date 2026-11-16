@@ -69,12 +69,15 @@ class PartialFile:
         self.opened = False
         self.chunk_size = CHUNK_SIZE
 
-    def open(self) -> int:
-        self.directory.mkdir(parents=True, exist_ok=True)
+    def open(self, *, readonly: bool = False) -> int:
+        if not readonly:
+            self.directory.mkdir(parents=True, exist_ok=True)
         has_payload, has_journal = self.payload.exists(), self.journal.exists()
         if has_payload != has_journal:
             raise RuntimeError(f'续传数据与记录不成对：{self.payload} / {self.journal}')
         if not has_payload:
+            if readonly:
+                return 0
             with self.payload.open('xb') as stream:
                 _sync(stream)
             with self.journal.open('xb') as stream:
@@ -115,16 +118,16 @@ class PartialFile:
                     raise RuntimeError(f'已提交分片损坏：{self.payload}，偏移 {self.offset}')
                 self.offset += length
                 valid_lines.append(line)
-        if len(valid_lines) != len(lines):
+        actual = self.payload.stat().st_size
+        if actual < self.offset or actual > self.size or actual - self.offset > self.chunk_size:
+            raise RuntimeError(f'续传文件长度与提交边界不符：{actual} / {self.offset}')
+        if len(valid_lines) != len(lines) and not readonly:
             backup = self.journal.with_name(self.journal.name + f'.torn-{uuid.uuid4().hex}')
             self.journal.rename(backup)
             with self.journal.open('xb') as stream:
                 stream.writelines(valid_lines)
                 _sync(stream)
-        actual = self.payload.stat().st_size
-        if actual < self.offset or actual > self.size or actual - self.offset > self.chunk_size:
-            raise RuntimeError(f'续传文件长度与提交边界不符：{actual} / {self.offset}')
-        self.opened = True
+        self.opened = not readonly
         return self.offset
 
     def append(self, data: bytes) -> None:
@@ -141,7 +144,7 @@ class PartialFile:
         self.offset += len(data)
 
     async def reconcile_tail(self, fetch: Callable[[int, int], Awaitable[bytes]],
-                             timeout: float = 45) -> None:
+                             timeout: float = 45, *, readonly: bool = False) -> None:
         extra = self.payload.stat().st_size - self.offset
         if extra <= 0:
             return
@@ -154,6 +157,8 @@ class PartialFile:
             prefix = stream.read(extra)
         if prefix != data[:extra]:
             raise RuntimeError(f'未提交分片与 Telegram 不一致：{self.payload}，偏移 {self.offset}')
+        if readonly:
+            return
         with self.payload.open('ab') as stream:
             stream.write(data[extra:])
             _sync(stream)

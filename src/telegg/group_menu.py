@@ -97,12 +97,16 @@ def save_groups(path: Path, groups: list[ConfiguredGroup]) -> None:
     print('群组清单已保存。', flush=True)
 
 
+MODE_LABELS = {'fast': '快速模式（不检查缺失/额外）', 'exact': '逐文件下载（检查缺失/额外）',
+               'extras': '检查缺失和额外文件（不下载新内容）'}
+
+
 def choose_groups(groups: list[ConfiguredGroup], save: Callable[[list[ConfiguredGroup]], None],
                   read: Callable[[str], str] = input,
                   names: dict[str, str] | None = None,
                   verify_mode: str = 'fast',
                   on_verify_change: Callable[[str], None] | None = None) -> list[str] | None:
-    """数字菜单：单组、全部、增删、一个校验模式开关和退出。"""
+    """数字菜单：单组、全部、增删、下载校验/只读检查模式和退出。"""
     def answer(prompt: str) -> str:
         try:
             return read(prompt).strip()
@@ -116,12 +120,13 @@ def choose_groups(groups: list[ConfiguredGroup], save: Callable[[list[Configured
         return name if name and name != identity else f'群组 {identity}'
 
     while True:
+        action = '检查' if verify_mode == 'extras' else '下载'
         print('\n已配置的 Telegram 群组：', flush=True)
         for number, item in enumerate(groups, 1):
-            print(f'  {number}. 下载 {label(item.identity)}', flush=True)
+            print(f'  {number}. {action} {label(item.identity)}', flush=True)
         if groups:
             all_number, add_number, remove_number = len(groups) + 1, len(groups) + 2, len(groups) + 3
-            print(f'  {all_number}. 下载全部群组', flush=True)
+            print(f'  {all_number}. {action}全部群组', flush=True)
         else:
             add_number, remove_number = 1, None
             print('  暂无群组', flush=True)
@@ -129,7 +134,7 @@ def choose_groups(groups: list[ConfiguredGroup], save: Callable[[list[Configured
         if remove_number is not None:
             print(f'  {remove_number}. 移除群组', flush=True)
         toggle_number = (remove_number + 1) if remove_number is not None else (add_number + 1)
-        mode_label = '快速模式' if verify_mode == 'fast' else '逐文件检查模式'
+        mode_label = MODE_LABELS[verify_mode]
         print(f'  {toggle_number}. 切换模式（当前：{mode_label}）', flush=True)
         print('  0. 退出', flush=True)
         choice = answer('请输入数字选择：')
@@ -143,10 +148,11 @@ def choose_groups(groups: list[ConfiguredGroup], save: Callable[[list[Configured
             print(f'已选择全部 {len(groups)} 个群组', flush=True)
             return [item.url for item in groups]
         if choice == str(toggle_number):
-            verify_mode = 'exact' if verify_mode == 'fast' else 'fast'
+            modes = tuple(MODE_LABELS)
+            verify_mode = modes[(modes.index(verify_mode) + 1) % len(modes)]
             if on_verify_change:
                 on_verify_change(verify_mode)
-            print(f'已切换为：{"快速模式" if verify_mode == "fast" else "逐文件检查模式"}', flush=True)
+            print(f'已切换为：{MODE_LABELS[verify_mode]}', flush=True)
             continue
         if choice == str(add_number):
             while True:

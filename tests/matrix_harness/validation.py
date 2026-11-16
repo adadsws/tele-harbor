@@ -16,7 +16,7 @@ def evidence(work):
     return result
 
 
-def validate(case, mode, work, peer, reference, run, before):
+def validate(case, mode, work, peer, reference, run, before, *, layers=None, contexts=None):
     r = ScanRecord(work / 'scans' / f'{peer}.jsonl')
     valid = 0
     for mid, digest in reference.items():
@@ -32,6 +32,11 @@ def validate(case, mode, work, peer, reference, run, before):
     if expected == 'success':
         if run['exit'] != 0 or valid != len(reference):
             issues.append('success_or_hash_missing')
+        if layers and any(Path(r.results.get(mid, {}).get('detail', '')).parent.name != layer
+                          for mid, layer in layers.items()):
+            issues.append('wrong_album_or_standalone_layer')
+        if contexts and any(r.standalone_contexts.get(mid) != value for mid, value in contexts.items()):
+            issues.append('wrong_preceding_album_context')
     elif expected == 'reject':
         if run['exit'] != 1:
             issues.append('expected_rejection')
@@ -45,6 +50,11 @@ def validate(case, mode, work, peer, reference, run, before):
             issues.append('unexpected_fast_behavior')
         if valid == len(reference):
             issues.append('corruption_fixture_not_present')
+    elif expected == 'reported_unmodified':
+        if run['exit'] != 0 or '[已下载缺失路径]' not in messages or '[保持不动]' not in messages:
+            issues.append('missing_review_not_reported')
+        if evidence(work) != before:
+            issues.append('decline_modified_files')
     elif expected == 'repair_or_reject':
         if not (run['exit'] == 1 or (run['exit'] == 0 and valid == len(reference))):
             issues.append('wrong_path_falsely_completed')

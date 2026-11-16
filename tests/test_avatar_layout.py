@@ -100,7 +100,7 @@ class AvatarLayoutTests(unittest.TestCase):
         self.assertEqual(destination(root, anchor, batch, second),
                          root / '[From_2026-10-28-m244]' / '2026-10-28-g124')
         self.assertEqual(destination(root, anchor, batch, single),
-                         root / '[From_2026-10-28-m244]')
+                         root / '[From_2026-10-28-m244]' / '2026-10-28-g124后')
 
     def test_publish_moves_files_and_leaves_source_directory_in_place(self):
         with tempfile.TemporaryDirectory() as temp:

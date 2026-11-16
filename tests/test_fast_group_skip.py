@@ -143,7 +143,8 @@ class FastGroupSkipTests(unittest.TestCase):
                        (('101', 'video'),))
         published = root / group_folder(item)
         published.mkdir(parents=True)
-        path = published / '2023-11-15-m101_1_777.bin'
+        path = published / '2023-11-15-首个group前' / '2023-11-15-m101_1_777.bin'
+        path.parent.mkdir()
         path.write_bytes(b'fixture')
         record = ScanRecord(root / 'scan.jsonl')
         record.record_scan([item], reached_oldest=False)

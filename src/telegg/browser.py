@@ -39,6 +39,8 @@ from .verification_manifest import verified_digest, read_snapshot
 from .errors import LocalDataError, RemoteFileError
 from .failure_notes import retire_failure_note, write_failure_note
 from .local_validation import validate_local_archive
+from .album_context import batch_contexts
+from .layout_migration import legacy_files
 
 BUBBLE = '#column-center .bubble[data-mid]:not(.service)'
 SCROLL = '#column-center .chat.active .bubbles-scrollable, #column-center > .bubbles-scrollable'
@@ -778,7 +780,8 @@ def reusable_group_count(batch: list[Message], selected: set[str], published: Pa
     anchor = batch[0]
     reused = 0
     for item in batch:
-        folder = destination(published.parent, anchor, batch, item)
+        folder = destination(published.parent, anchor, batch, item,
+                             standalone=getattr(record, 'standalone_contexts', {}).get(item.mid))
         count = reusable_message_count(item, prior_messages.get(item.mid),
                                        prior_media.get(item.mid, {}), folder,
                                        record, existing_index)
@@ -851,8 +854,10 @@ def staged_batch_complete(batch: list[Message], record: ScanRecord,
     return True
 
 
-def publish_ready_staged_groups(root: Path, staging_root: Path, record: ScanRecord) -> int:
+def publish_ready_staged_groups(root: Path, staging_root: Path, record: ScanRecord,
+                                *, protected_associations=None) -> int:
     """已确认较旧边界的完整编组可在有界续跑中发布。"""
+    retire_published_associations(root, staging_root, record,protected_associations)
     reconcile_reply_groups(root, record)
     reconcile_reply_groups(staging_root, record)
     links = linked_group_names(record)
@@ -901,7 +906,19 @@ def publish_ready_staged_groups(root: Path, staging_root: Path, record: ScanReco
         detail(f'编组文件已核对并移入成品目录：{name}')
     if published:
         reconcile_reply_groups(root, record)
+    retire_published_associations(root, staging_root, record,protected_associations)
     return published
+
+
+def retire_published_associations(root: Path, staging_root: Path, record: ScanRecord,protected=None) -> None:
+    from .association_cleanup import archive_duplicate_associations
+    paths = load_paths()
+    archive_root = (paths['output'].parent/'~local'/'~archive'
+                    if root.is_relative_to(paths['output']) else root.parent/'~archive')
+    sources = archive_duplicate_associations(root, staging_root, record, staged_batch_complete, archive_root,exclude=protected)
+    if sources:
+        archive_empty_relocated_folders(root, sources, staging_root)
+        detail(f'已可恢复归档 {len(sources)} 份重复暂存关联清单')
 
 
 def archive_empty_relocated_folders(root: Path, source_folders: set[Path],
@@ -1921,7 +1938,7 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
                          full_scan: bool = False, pause_at_oldest: bool = False,
                          exact_verify: bool = False,
                          coarse_skip: bool = False,
-                         rebuild_local: bool = False) -> tuple[int, int, int, int]:
+                         rebuild_local: bool = False, *, reviewed: bool = False) -> tuple[int, int, int, int]:
     """单页流式处理：完整确认下一组后下载上一组，最多领先一组。"""
     if rebuild_local:
         raise ValueError('--rebuild-local 已停用；只允许从 ~local 逐个复用媒体文件')
@@ -1937,8 +1954,12 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
     partial_base = (paths['partials'] if output.resolve() == paths['output'] else
                     output.resolve().parent / f'.{output.resolve().name}.telegg-partials')
     partial_root = partial_base / group_id(url)
+    protected_associations = set(staging_root.glob('*关联组/关联清单.json')) if coarse_skip else set()
+    if not dry_run and legacy_files([path for path in (root, staging_root) if path.is_dir()], record):
+        raise LocalDataError('发现旧无 group 文件位置；请先运行 download.bat --migrate-standalone-layout '
+                             '（可加 --dry-run 预览），下载未启动')
     await asyncio.to_thread(validate_local_archive, root, staging_root, record, partial_root,
-                            enabled=exact_verify)
+                            enabled=exact_verify and not reviewed)
     if reuse_group.is_dir():
         print('[复用] 正在核验旧文件与完整分片记录', flush=True)
         rekeyed = await asyncio.to_thread(rekey_legacy_media, reuse_group,
@@ -1952,6 +1973,11 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
             index.setdefault(mid, []).extend(files)
         for mid, files in existing_media_index(reuse_group).items():
             index.setdefault(mid, files)
+        if coarse_skip:
+            # 快速模式不检查旧文件缺失或额外；逐文件模式已由共用检查预先验收。
+            for mid, value in record.results.items():
+                if value.get('status') in ('downloaded','skipped','relocated') and value.get('detail'):
+                    index[mid] = [Path(value['detail'])]
         return index
 
     prior_messages = record.ordered_messages()
@@ -1968,8 +1994,6 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
         reconcile_reply_groups(root, record)
         reconcile_reply_groups(staging_root, record)
     existing_index = {} if dry_run else current_media_index()
-    if not dry_run and demote_unready_replies(root, staging_root, record, existing_index):
-        existing_index = current_media_index()
     server_mode = False
     api_media = reuse_group.is_dir()
     prefix_count = prefix_files = 0
@@ -1998,17 +2022,17 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
             date = date_label(marker['timestamp']) if marker else '已知最旧端之后'
             outcome = ('本次限额内均已完成' if limit is not None and prefix_count >= limit
                        else f'从 {date} 继续')
-            print(f'[快速模式] 已核对并跳过 {prefix_count} 条、{prefix_files} 个文件；'
+            print(f'[{"逐文件下载" if reviewed else "快速模式"}] 已核对并跳过 {prefix_count} 条、{prefix_files} 个文件；'
                   f'{outcome}', flush=True)
             detail(f'快速端点 m{endpoint}，服务器核对前缀 {prefix_count} 条')
             if limit is not None and prefix_count >= limit:
                 demote_unready_replies(root, staging_root, record, current_media_index())
-                publish_ready_staged_groups(root, staging_root, record)
+                publish_ready_staged_groups(root, staging_root, record,protected_associations=protected_associations)
                 archive_empty_relocated_folders(root, getattr(record, 'relocated_folders', set()), staging_root)
                 print(f'[核验] 已选 {prefix_count} 条原消息均已处理', flush=True)
                 return prefix_count, 0, prefix_files, 0
         else:
-            print('[快速模式] 端点未确认，按时间顺序扫描', flush=True)
+            print(f'[{"逐文件下载" if reviewed else "快速模式"}] 端点未确认，按时间顺序扫描', flush=True)
     progress = ScanProgress()
     scanned_desc: list[Message] = []
     wanted: set[str] = set()
@@ -2028,6 +2052,22 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
         items = [item for item in reversed(batch) if item.mid in selected and item.mid not in handled]
         if not items:
             return
+        if not dry_run:
+            from .partial_preflight import validate_pending_media
+            await validate_pending_media(page, int(group_id(url)), items, record, existing_index,
+                                         partial_root, server_media_source, fetch_resume_part,
+                                         trust_completed=coarse_skip)
+        # 新到旧处理时，单条消息的前一相册可能位于尚未扫描的更旧头像段。
+        contexts = await batch_contexts(page, int(group_id(url)), batch,
+                                        getattr(record, 'standalone_contexts', {}),
+                                        oldest_confirmed=bool((progress.reached_oldest and scanned_desc and
+                                            batch[0].mid == scanned_desc[-1].mid) or
+                                            (record.history_complete and record.ordered_messages() and
+                                             batch[0].mid == record.ordered_messages()[0].mid)))
+        if not dry_run:
+            record.append([{'kind': 'standalone_context', 'mid': mid, 'context': context}
+                           for mid, context in contexts.items()
+                           if record.standalone_contexts.get(mid) != context])
         before_downloaded, before_reused, before_failed = downloaded, reused, failed
         if not dry_run:
             moved = reconcile_reply_groups(root, record) + reconcile_reply_groups(staging_root, record)
@@ -2235,7 +2275,8 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
                         current_media.setdefault(found.source_mid, {})[found.media_mid] = found
                 verified_root = root if has_group_files(published) else staging_root
                 for item in items:
-                    item_folder = destination(verified_root, anchor, batch, item)
+                    item_folder = destination(verified_root, anchor, batch, item,
+                                              standalone=contexts.get(item.mid))
                     if reusable_message_count(item, item, current_media.get(item.mid, {}),
                                               item_folder, record, existing_index,
                                               check_mark=False) is not None:
@@ -2253,7 +2294,7 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
 
         for message_number, item in enumerate(items, 1):
             handled.add(item.mid)
-            folder = destination(work_root, anchor, batch, item)
+            folder = destination(work_root, anchor, batch, item, standalone=contexts.get(item.mid))
             if dry_run:
                 print(f'  消息 {message_number}/{len(items)} · 约 {item.media_count} 个文件', flush=True)
                 detail(f'预览 m{item.mid}: {folder}')
@@ -2375,7 +2416,7 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
             demote_unready_replies(root, staging_root, record, current_media_index())
             reconcile_reply_groups(root, record)
             reconcile_reply_groups(staging_root, record)
-            publish_ready_staged_groups(root, staging_root, record)
+            publish_ready_staged_groups(root, staging_root, record,protected_associations=protected_associations)
             relocated_sources.update(getattr(record, 'relocated_folders', set()))
             archive_empty_relocated_folders(root, relocated_sources, staging_root)
             selected_parts = [part for item in scanned_desc if item.mid in wanted for part in item.parts]

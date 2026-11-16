@@ -95,9 +95,9 @@ def migrate_registry(folder: Path) -> Path:
     return path
 
 
-def validate_failure_notes(root: Path) -> None:
-    """只读校验登记及说明，不修复本地数据。"""
-    for registry in registry_files(root):
+def validate_failure_notes(root: Path, *, registries=None) -> None:
+    """只读校验登记及说明；独立检查可传已盘点的登记，避免进入范围外归档。"""
+    for registry in registry_files(root) if registries is None else registries:
         for name, entry in registered_notes(registry.parent).items():
             _check_note(registry.parent / name, entry)
 

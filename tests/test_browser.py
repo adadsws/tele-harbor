@@ -110,6 +110,8 @@ class PublicationFailureTests(unittest.TestCase):
         paths = {'output': output, 'staging': staging, 'partials': base / 'partials',
                  'scan_records': base / 'records'}
         with (patch('telegg.browser.load_paths', return_value=paths),
+              patch('telegg.album_context.preceding_album', new_callable=AsyncMock,
+                    return_value={'album_id': '', 'day': '', 'previous_mid': ''}),
               patch('telegg.browser.SCAN_RECORD_ROOT', paths['scan_records']),
               patch('telegg.browser.open_group', new_callable=AsyncMock, return_value='fixture'),
               patch('telegg.browser.iter_history', side_effect=history),

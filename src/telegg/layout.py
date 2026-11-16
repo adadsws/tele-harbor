@@ -135,14 +135,31 @@ def same_avatar_group(older: Message, newer: Message) -> bool:
             and abs(newer.timestamp - older.timestamp) <= 121)
 
 
-def destination(root: Path, anchor: Message | None, batch: list[Message], item: Message) -> Path:
-    if anchor is None:
-        return root / "未归组"
-    segment = root / group_folder(anchor)
-    if not item.album_id:
-        return segment
+def album_folder(item: Message) -> str:
+    """相册目录日期取相册最旧成员；无 group 定位层复用同一名称。"""
     oldest = min(((mid, timestamp) for mid, _text, timestamp, _media in item.parts),
                  key=lambda value: (value[1], int(value[0])),
                  default=(item.mid, item.timestamp))
     day = datetime.fromtimestamp(oldest[1], CHINA_TIME).strftime('%Y-%m-%d')
-    return segment / f'{day}-g{item.album_id}'
+    return f'{day}-g{item.album_id}'
+
+
+def standalone_folder(item: Message, context: dict) -> str:
+    if context.get('album_id'):
+        return f"{context['day']}-g{context['album_id']}后"
+    return f'{message_time(item):%Y-%m-%d}-首个group前'
+
+
+def destination(root: Path, anchor: Message | None, batch: list[Message], item: Message,
+                *, standalone: dict | None = None) -> Path:
+    if anchor is None:
+        return root / "未归组"
+    segment = root / group_folder(anchor)
+    if not item.album_id:
+        if standalone is None:
+            previous = [entry for entry in batch if entry.album_id and int(entry.mid) < int(item.mid)]
+            album = max(previous, key=lambda entry: int(entry.mid)) if previous else None
+            standalone = ({'album_id': album.album_id, 'day': album_folder(album).split('-g')[0]}
+                          if album else {})
+        return segment / standalone_folder(item, standalone)
+    return segment / album_folder(item)

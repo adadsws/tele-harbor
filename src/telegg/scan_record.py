@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -31,6 +32,7 @@ class ScanRecord:
         self.discovered: set[str] = set()
         self.verified_groups: dict[str, str] = {}
         self.verified_messages: dict[str, str] = {}
+        self.standalone_contexts: dict[str, dict] = {}
         self.history_complete = False
         if path.is_file():
             for line_number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
@@ -51,6 +53,7 @@ class ScanRecord:
         'history_complete': '_apply_history_complete',
         'group_verified': '_apply_group_verified',
         'message_verified': '_apply_message_verified',
+        'standalone_context': '_apply_standalone_context',
     }
 
     def _apply(self, event: dict) -> None:
@@ -69,6 +72,7 @@ class ScanRecord:
         self.discovered.clear()
         self.verified_groups.clear()
         self.verified_messages.clear()
+        self.standalone_contexts.clear()
         self.history_complete = False
 
     def _apply_message(self, event: dict) -> None:
@@ -148,6 +152,17 @@ class ScanRecord:
             raise ValueError('编组核验标记无效')
         self.verified_groups[name] = signature
 
+    def _apply_standalone_context(self, event: dict) -> None:
+        mid = str(event['mid'])
+        context = event['context']
+        if not mid.isdecimal() or not isinstance(context, dict):
+            raise ValueError('无 group 定位记录无效')
+        album_id, day = context.get('album_id', ''), context.get('day', '')
+        if (not isinstance(album_id, str) or (album_id and not album_id.isdecimal()) or
+                not isinstance(day, str) or (album_id and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day))):
+            raise ValueError('前一相册身份或日期无效')
+        self.standalone_contexts[mid] = dict(context)
+
     def _apply_message_verified(self, event: dict) -> None:
         mid, signature = str(event['mid']), event['signature']
         if not mid.isdecimal() or not isinstance(signature, str) or len(signature) != 64:
@@ -159,7 +174,7 @@ class ScanRecord:
         if not events:
             return
         fields = ('messages', 'source_messages', 'results', 'content_files', 'media',
-                  'discovered', 'verified_groups', 'verified_messages')
+                  'discovered', 'verified_groups', 'verified_messages', 'standalone_contexts')
         preview = object.__new__(ScanRecord)
         preview.path = self.path
         for field in fields:
@@ -298,6 +313,8 @@ class ScanRecord:
                       for name, signature in self.verified_groups.items())
         events.extend({'kind': 'message_verified', 'mid': mid, 'signature': signature}
                       for mid, signature in self.verified_messages.items() if mid in active)
+        events.extend({'kind': 'standalone_context', 'mid': mid, 'context': context}
+                      for mid, context in self.standalone_contexts.items() if mid in active)
         events.append({'kind': 'history_complete', 'scan_proof': 'older_messages_observed_v2'})
         self.append(events)
 

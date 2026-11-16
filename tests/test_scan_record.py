@@ -392,6 +392,8 @@ class ScanRecordTests(unittest.TestCase):
             return 'downloaded', None
 
         with (patch('telegg.browser.ScanRecord', return_value=record),
+              patch('telegg.album_context.preceding_album', new_callable=AsyncMock,
+                    return_value={'album_id': '', 'day': '', 'previous_mid': ''}),
               patch('telegg.browser.open_group', new_callable=AsyncMock, return_value='群组'),
               patch('telegg.browser.iter_history', side_effect=history),
               patch('telegg.browser.discover_media', side_effect=discover),

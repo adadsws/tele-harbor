@@ -60,6 +60,10 @@ class ProgressTests(unittest.TestCase):
         self.assertIn('\rshort        ', terminal.getvalue())
 
     def test_fast_prefix_also_publishes_completed_staging(self):
+        stages = []
+        async def checked_prefix(*_args):
+            stages.append('prefix_checked')
+            return (99, 1, 0)
         record = MagicMock()
         record.ordered_messages.return_value = []
         record.media = {}
@@ -71,16 +75,18 @@ class ProgressTests(unittest.TestCase):
               patch('telegg.browser.existing_media_index', return_value={}),
               patch('telegg.browser.resume_endpoint', return_value=99),
               patch('telegg.browser.verify_resume_prefix', new_callable=AsyncMock,
-                    return_value=(99, 1, 0)),
+                    side_effect=checked_prefix),
               patch('telegg.browser.reconcile_reply_groups'),
-              patch('telegg.browser.demote_unready_replies', return_value=False) as demote,
-              patch('telegg.browser.publish_ready_staged_groups') as publish,
+              patch('telegg.browser.demote_unready_replies',
+                    side_effect=lambda *_args: stages.append('demote')),
+              patch('telegg.browser.publish_ready_staged_groups',
+                    side_effect=lambda *_args,**_kwargs: stages.append('publish')) as publish,
               redirect_stdout(io.StringIO())):
             result = asyncio.run(download_group(None, 'https://web.telegram.org/k/#-1',
                                                 TEST_ROOT / 'fast-prefix-output', 1, False,
                                                 coarse_skip=True))
         self.assertEqual(result, (1, 0, 0, 0))
-        self.assertEqual(demote.call_count, 2)
+        self.assertEqual(stages, ['prefix_checked', 'demote', 'publish'])
         publish.assert_called_once()
 
     def test_audit_keeps_all_originals_in_one_album(self):
@@ -173,6 +179,8 @@ class ProgressTests(unittest.TestCase):
 
         output = io.StringIO()
         with (patch('telegg.browser.ScanRecord', return_value=record),
+              patch('telegg.album_context.preceding_album', new_callable=AsyncMock,
+                    return_value={'album_id': '', 'day': '', 'previous_mid': ''}),
               patch('telegg.browser.open_group', new_callable=AsyncMock, return_value='群组'),
               patch('telegg.browser.iter_history', side_effect=history),
               patch('telegg.browser.discover_media', side_effect=discover),

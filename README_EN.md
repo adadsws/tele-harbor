@@ -2,32 +2,25 @@
 
 [简体中文](README.md) · [English](README_EN.md)
 
-Download and organize files and text from Telegram groups on Windows. Supports multiple groups, resumable downloads, and quick skipping of completed items. Shows message dates and download progress.
+Download files and text from Telegram groups on Windows. Organize them by group and continue after an interruption.
 
 ## Get started
 
 1. Install Python 3.11 or later and Google Chrome.
-2. Copy the [example configuration](config/config.example.json) to `config/config.local.json` and choose your save location.
-3. Double-click `download.bat` and sign in to Telegram in the Chrome window.
-4. Use the numbered menu to add groups, then download a selected group or all groups.
+2. Copy the [example configuration](config/config.example.json) to `config/config.local.json` and set your download location.
+3. Double-click `download.bat` and sign in to Telegram in Chrome.
+4. Use the numbered menu to add groups, then select one group or all groups to download.
 
-Messages are processed from newest to oldest. Run the program again after an interruption to continue. Files and text are organized by group.
+Files go to the configured location; the example uses `~outputs-final/downloaded`. Keep records and temporary files to continue after an interruption. Check the console and logs for failures.
 
-Connection problems are explained and your progress is kept. If a file still fails after retries, the script writes a same-name TXT explanation, keeps its failed status, and continues with other files. The explanation is archived once the original file is recovered and verified.
+Choose the guide you need:
 
-The example configuration saves downloads in `~outputs-final/downloaded` by default.
+- [Install and sign in](docs/guides/SETUP_EN.md): prepare and start the program.
+- [Manage groups](docs/guides/GROUPS_EN.md): get IDs, add and remove groups.
+- [Download and resume](docs/guides/DOWNLOADS_EN.md): start tasks, find files and continue later.
+- [Data and file management](docs/guides/DATA_EN.md): understand records, move and add files.
+- [Choose modes and review files](docs/guides/MODES_EN.md): choose a mode and handle missing files and extras.
 
-## Two modes
+Keep local configuration, sign-in data and downloads on your own computer; do not upload them.
 
-- Fast mode (default): check the latest messages, then use valid completion markers to jump close to unfinished downloads. Older records may need an initial marker update.
-- Per-file check mode: check existing files. Duplicate files, path, or record problems stop the affected group with an error.
-
-Use “Switch mode” in the menu to change modes. Enter `0` to exit. Removing a group from the menu keeps its downloaded files.
-
-Keep local configuration, sign-in data, and downloads on your own computer; do not upload them.
-
-Opening the BAT normally shows its window. Automated debugging supports hidden and visible browser windows; see [More usage options](docs/COMMAND_LINE.md).
-
-The usage guide also explains how to link directly to an original message.
-
-[More usage options](docs/COMMAND_LINE.md) · [Documentation](docs/README.md)
+[More options and older layouts](docs/AGENT_CONTEXT.md#english-command-line-usage)

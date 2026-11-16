@@ -2,7 +2,7 @@
 
 历史阶段记录：数字、版本和未验证条件仅代表记录时点；当前任务状态见 [遗留索引](../plans/2026-11-08-remaining-verification.md)，命名与交付要求见 [现行规范](../AGENT_CONTEXT.md)。
 
-本文件保留已完成的后续下载及分组验收阶段。旧原件恢复仍未完成，继续见 [活动排障](2026-11-10-remote-file-root-cause.md)；当前状态以 [遗留索引](../plans/2026-11-08-remaining-verification.md) 为准。
+本文件保留已完成的后续下载及分组验收阶段。旧原件当时未恢复，后已按用户决定停止专项恢复，见 [诊断结案](2026-11-10-remote-file-root-cause.md)；当前状态以 [遗留索引](../plans/2026-11-08-remaining-verification.md) 为准，下文的恢复移交仅记录历史。
 
 沿用 [当前规范](../AGENT_CONTEXT.md)，关联 [旧原件排障](2026-11-09-bat-timeout-diagnostics.md)。不读取或展示隐私正文、图片和原始附件名称。
 

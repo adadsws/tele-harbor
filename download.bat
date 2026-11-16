@@ -16,6 +16,7 @@ set "PYTHONPATH=%~dp0src"
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONUNBUFFERED=1"
 echo [启动] tele-harbor · Telegram 群组下载
+echo [模式] 快速模式不检查缺失/额外；后两种模式在流程结束后询问是否修改。
 ".venv-browser\Scripts\python.exe" -m telegg %*
 set "RESULT=%ERRORLEVEL%"
 echo.
