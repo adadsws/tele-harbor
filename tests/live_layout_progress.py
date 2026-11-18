@@ -13,7 +13,7 @@ from live_test_policy import assert_live_test_allowed
 from matrix_harness.execution import run_bat
 from matrix_harness.fixtures import hold, rows, save_rows
 from matrix_harness.isolation import configure, copy_case, files, prepare_runtime, protected_state, sha, write_json
-from matrix_harness.history_window import configure_window, install
+from matrix_harness.history_window import install
 
 
 INJECTOR = '''
@@ -134,7 +134,7 @@ def audit(suite):
             work = batch/label
             record = legacy_copy(baseline, work)
             configure(runtime, work, profile, peer)
-            configure_window(work, {'peer': peer, 'upper': sample['upper']})
+
             before = {mid: (sha(Path(row['detail'])), Path(row['detail']).stat().st_ino)
                       for mid, row in record.results.items() if mid in references}
             refusal_before = protected_state({'work': work}, list(files(work)))

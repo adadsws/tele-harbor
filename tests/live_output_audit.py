@@ -1,7 +1,6 @@
 """Audit finished manifests and publication state without displaying content."""
 
 import json
-import re
 from pathlib import Path
 from telegg.local_config import load_paths
 from telegg.scan_record import ScanRecord
@@ -17,15 +16,6 @@ def main():
     failures = []
     expected_peers = {group.identity for group in load_groups()}
     seen_peers = set()
-    baseline = {}
-    for journal in (paths['output'].parent / '~local' / '~archive').glob('rebuild-empty-logic-*/moves.jsonl'):
-        for line in journal.read_text(encoding='utf-8').splitlines():
-            source = Path(json.loads(line)['from'])
-            peer = next((match.group(1) for part in source.parts
-                         if (match := re.search(r'\[(-\d+)\]$', part))), None)
-            media = re.match(r'^\d{4}-\d{2}-\d{2}-m(\d+)_\d+_\d+', source.name)
-            if peer and media:
-                baseline.setdefault(peer, set()).add(media.group(1))
     for root in paths['output'].iterdir():
         if not root.is_dir():
             continue
@@ -35,9 +25,11 @@ def main():
         seen_peers.add(peer)
         record = ScanRecord(paths['scan_records'] / f'{peer}.jsonl')
         index = existing_media_index(root, known_text_media=set(record.media))
-        missing_baseline = baseline.get(peer, set()) - index.keys()
+        baseline = {mid for mid, row in record.results.items()
+                    if mid in record.media and row.get('status') in ('downloaded', 'skipped', 'relocated')}
+        missing_baseline = baseline - index.keys()
         if missing_baseline:
-            failures.append((peer, 'missing_pre_rebuild_media', len(missing_baseline)))
+            failures.append((peer, 'missing_recorded_media', len(missing_baseline)))
         links = linked_group_names(record)
         expected = {group_folder(anchor): {part[0] for item in batch for part in item.parts}
                     for anchor, batch in grouped(record.ordered_messages())}
@@ -83,7 +75,7 @@ def main():
             failures.append((peer, 'empty_output_dirs', empty))
         print(json.dumps({'peer': peer, 'messages': len(seen), 'segments': segments,
                           'media': sum(len(v) for v in index.values()), 'linked_groups': linked_count,
-                          'pre_rebuild_media': len(baseline.get(peer, set())),
+                          'recorded_media': len(baseline),
                           'empty_dirs': empty}, ensure_ascii=False))
     failures.extend((peer, 'missing_output_group') for peer in sorted(expected_peers - seen_peers))
     staging_files = sum(1 for path in paths['staging'].rglob('*') if path.is_file())

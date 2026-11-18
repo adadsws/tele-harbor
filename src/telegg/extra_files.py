@@ -59,7 +59,7 @@ def _is_link(path: Path) -> bool:
 
 
 def group_roots(output: Path, staging: Path, identity: str) -> list[Path]:
-    """只选择指定群的活动下载目录；不进入复用池、归档或分片。"""
+    """只选择指定群的活动下载目录；不进入历史目录、归档或分片。"""
     roots = []
     for requested in (output.absolute(), staging.absolute()):
         if any(_is_link(parent) for parent in (requested, *requested.parents)):

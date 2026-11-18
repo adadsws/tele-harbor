@@ -20,4 +20,6 @@ Fast mode skips completed items from records, without replacing moved files or c
 
 For example, a completed video moved elsewhere stays skipped in Fast mode; the other modes report its original location as missing. This does not cover moving entire directory trees or program records.
 
+Older media directories are no longer searched for downloads or recovery. Sign-in data uses its configured directory. Recoverable archives use `~archive` under the data management root instead of the retired local directory.
+
 [Back to project README](../../README_EN.md)

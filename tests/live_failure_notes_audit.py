@@ -84,7 +84,7 @@ def audit(suite, *, legacy_registry=False):
                       and sha(Path(row['detail'])) == sha(original)
                       for m, original in references.items() for row in [record.results.get(m, {})])
         active = [p for base in ('output', 'staging') for p in registry_files(work / base)]
-        archive = list(registry_files(work / '~local/~archive'))
+        archive = list(registry_files(work / '~archive'))
         archive_names_valid = bool(archive) and all(p.name == REGISTRY for p in archive)
         recovery_ok = (restored['exit'] == 0 and restored['stop'] is None and network
                        and matches == len(references) and not active and archive_names_valid)

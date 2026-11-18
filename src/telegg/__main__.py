@@ -21,8 +21,16 @@ from .group_menu import GROUPS_FILE, MODE_LABELS, choose_groups, load_groups, sa
 from .extra_files import check_extra_files, loose_storage_files, storage_groups
 from .layout_migration import migrate_group_layout
 from .layout import group_id
-from .local_config import load_paths
+from .local_config import checked_path, load_paths
 from .storage_review import inspect_group, finish_review
+
+
+def output_path(value: str) -> Path:
+    """将路径拒绝原因直接交给参数解析器显示。"""
+    try:
+        return checked_path(value, '--output')
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
 
 
 def arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -30,7 +38,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     load_groups()
     parser = argparse.ArgumentParser(description='使用可见 Chrome 从 Telegram Web 下载群组媒体；无需 API 凭据')
     parser.add_argument('groups', nargs='*', help='Telegram Web K 群组链接；留空进入群组选择菜单')
-    parser.add_argument('--output', type=Path, default=paths['output'], help='输出根目录')
+    parser.add_argument('--output', type=output_path,
+                        default=paths['output'], help='输出根目录')
     parser.add_argument('--limit', type=int, help='每组仅处理最新 N 条消息，用于调试')
     parser.add_argument('--dry-run', action='store_true', help='只扫描并显示目录计划')
     parser.add_argument('--check-extra-files', action='store_true',
@@ -61,10 +70,8 @@ async def run(argv: list[str] | None = None) -> int:
         raise ValueError('--audit-messages 不可与 --limit、--dry-run、--full-scan 同用')
     if args.full_scan and args.limit is not None:
         raise ValueError('--full-scan 不可与 --limit 同时使用')
-    if getattr(args, 'rebuild_local', False) and (args.full_scan or args.dry_run or args.audit_messages is not None):
-        raise ValueError('--rebuild-local 不可与 --full-scan、--dry-run、--audit-messages 同用')
     if getattr(args, 'rebuild_local', False):
-        raise ValueError('--rebuild-local 的旧目录迁移已停用；当前运行自动从 ~local 逐个复用媒体文件')
+        raise ValueError('--rebuild-local 已停用；旧媒体复用功能已移除')
     if getattr(args, 'pause_at_oldest', False):
         raise ValueError('--pause-at-oldest 的旧网页暂停流程已停用；下载扫描使用服务器原始消息')
     if getattr(args, 'check_extra_files', False):
@@ -198,7 +205,6 @@ async def run(argv: list[str] | None = None) -> int:
                             on_group_open, args.full_scan, getattr(args, 'pause_at_oldest', False),
                             current_verify == 'exact',
                             current_verify in ('fast','exact'),
-                            getattr(args, 'rebuild_local', False),
                             reviewed=reviewing,
                         )
                         failures += failed

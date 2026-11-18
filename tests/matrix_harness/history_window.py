@@ -7,6 +7,10 @@ async def bounded(page, peer_id, oldest_mid):
         oldest_mid = UPPER + 1
     return await original(page, peer_id, oldest_mid)
 browser.server_older_batch = bounded
+async def native_discover(page, url, item):
+    return await browser.discover_media_server(page, int(browser.group_id(url)), item)
+browser.discover_media = native_discover
+browser.save_media = browser.save_media_server
 '''
 
 
@@ -15,9 +19,3 @@ def install(runtime, info):
         return
     body = f"PEER = {int(info['peer'])}\nUPPER = {int(info['upper'])}\n" + HOOK
     (runtime / 'src/sitecustomize.py').write_text(body, encoding='utf-8')
-
-
-def configure_window(work, info):
-    if 'upper' in info:
-        # 空池只启用产品原生 API 媒体定位；不注入本地媒体或完成证据。
-        (work / '~local' / info['peer']).mkdir(parents=True, exist_ok=True)

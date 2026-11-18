@@ -8,7 +8,7 @@ from pathlib import Path
 from telegg.content_archive import save_group_manifest, save_text_file
 from telegg.browser import archive_empty_relocated_folders
 from telegg.layout import Message, destination, group_folder, grouped
-from telegg.local_reuse import move_files_only
+from telegg.file_moves import move_files_only
 
 
 class AvatarLayoutTests(unittest.TestCase):

@@ -12,7 +12,7 @@ from telegg.browser import (demote_unready_replies, normalized_reply_id,
 from telegg.layout import Message, group_folder
 from telegg.reply_groups import linked_anchors, linked_group_names, reconcile_reply_groups
 from telegg.scan_record import ScanRecord
-from telegg.local_reuse import move_files_only
+from telegg.file_moves import move_files_only
 
 
 def message(mid: int, text: str, target: int | None = None) -> Message:

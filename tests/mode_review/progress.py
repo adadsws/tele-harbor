@@ -3,7 +3,6 @@ from pathlib import Path
 from matrix_harness.catalog import CASES
 from matrix_harness.fixtures import build
 from matrix_harness.isolation import configure,copy_case,sha
-from matrix_harness.history_window import configure_window
 from matrix_harness.execution import run_bat
 from matrix_harness.validation import evidence,validate
 from telegg.scan_record import ScanRecord
@@ -22,7 +21,7 @@ def run_progress(context,case,mode,label=None,work=None):
             build(case,work,context['peer'],context['target_mid'],context['target_source'])
     runtime=context['runtime'];peer=context['peer']
     configure(runtime,work,context['profile'],peer)
-    configure_window(work,context['info'])
+
     before=evidence(work);scan=work/'scans'/f'{peer}.jsonl'
     old_scan=sha(scan) if scan.is_file() else None
     snapshots={str(p):sha(p) for p in (work/'partials').rglob('*.verified.jsonl')}

@@ -13,6 +13,8 @@ Download files and text from Telegram groups on Windows. Organize them by group 
 
 Files go to the configured location; the example uses `~outputs-final/downloaded`. Keep records and temporary files to continue after an interruption. Check the console and logs for failures.
 
+The program no longer imports files from older media directories. Keep current download records and resumable files. To recover missing completed files, use Exact download or Check mode and confirm the recovery prompt at the end.
+
 Choose the guide you need:
 
 - [Install and sign in](docs/guides/SETUP_EN.md): prepare and start the program.

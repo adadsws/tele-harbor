@@ -8,7 +8,7 @@ from pathlib import Path
 from live_test_policy import assert_live_test_allowed
 from matrix_harness.execution import run_bat
 from matrix_harness.fixtures import clear_completion, hold
-from matrix_harness.history_window import configure_window, install
+from matrix_harness.history_window import install
 from matrix_harness.isolation import configure, copy_case, files, protected_state, sha, sync_code, write_json
 from matrix_harness.validation import evidence
 from telegg.local_config import CONFIG_FILE, load_paths
@@ -50,7 +50,7 @@ def audit(suite):
             else:
                 hold(work,target);clear_completion(scan,target_mid)
                 for p in (work/'partials'/peer).glob(f'{target_mid}*.jsonl'):hold(work,p)
-            configure(runtime,work,profile,peer);configure_window(work,info)
+            configure(runtime,work,profile,peer)
             old=evidence(work);record_hash=sha(scan)
             run=run_bat(runtime,batch/f'{label}.txt',peer,'exact' if mode=='check' else mode,set(refs),
                         limit=None if mode=='check' else sample['limit'],input_bytes=answer,

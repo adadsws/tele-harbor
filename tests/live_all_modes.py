@@ -7,7 +7,7 @@ from pathlib import Path
 
 from live_test_policy import assert_live_test_allowed
 from matrix_harness.execution import run_bat
-from matrix_harness.history_window import configure_window,install
+from matrix_harness.history_window import install
 from matrix_harness.isolation import copy_case,protected_state,sha,sync_code,write_json
 from mode_review.fixtures import business_snapshot,configure,production_layout,snapshot,storage_fault
 from mode_review.progress import PROGRESS_CASES,run_progress
@@ -51,7 +51,7 @@ def storage_cases():
 def run_storage(context,label,kind,mode,answer,*,peers=None,groups=None):
     work,roots,fact=prepare_storage(context,label,kind)
     configure(context['runtime'],work,context['profile'],context['peer'],roots,groups=groups)
-    configure_window(work,context['info'])
+
     before=snapshot(work,roots);extra_hashes={p:sha(Path(p)) for p in fact['extras']}
     write_json(context['batch']/'logs'/f'{label}.before.json',before)
     data=b'' if answer=='eof' else (answer+'\n\n').encode()
@@ -96,7 +96,7 @@ def run_storage(context,label,kind,mode,answer,*,peers=None,groups=None):
 def run_menu(context,mode):
     label=f'menu-{mode}';work,roots,_=prepare_storage(context,label,'healthy')
     configure(context['runtime'],work,context['profile'],context['peer'],roots)
-    configure_window(work,context['info']);before=snapshot(work,roots)
+    before=snapshot(work,roots)
     toggles={'fast':0,'exact':1,'check':2}[mode]
     answers=('5\n'*toggles+'1\n0\n\n').encode()
     run=run_bat(context['runtime'],context['batch']/'logs'/f'{label}.txt',None,'fast',

@@ -27,8 +27,7 @@ from .layout import (Message, destination, group_folder, group_id, group_root, g
                      message_url, same_avatar_group, safe_name)
 from .reply_groups import (LINKED_NAME, _record_moved_paths, linked_group_names,
                            parent_for, reconcile_reply_groups)
-from .local_reuse import (has_group_files, move_files_only, rekey_legacy_media,
-                          reuse_root)
+from .file_moves import has_group_files, move_files_only
 from .local_config import load_paths
 from .media_index import existing_media_index, media_version
 from .progress import (date_label, file_line, group_line, media_label, media_timestamp, size_label,
@@ -569,7 +568,7 @@ class MediaTask:
     partial_root: Path | None = None
     position: int = 1
     total_files: int = 1
-    reuse_root: Path | None = None
+    archive_root: Path | None = None
 
 
 @dataclass(slots=True)
@@ -913,7 +912,7 @@ def publish_ready_staged_groups(root: Path, staging_root: Path, record: ScanReco
 def retire_published_associations(root: Path, staging_root: Path, record: ScanRecord,protected=None) -> None:
     from .association_cleanup import archive_duplicate_associations
     paths = load_paths()
-    archive_root = (paths['output'].parent/'~local'/'~archive'
+    archive_root = (paths['output'].parent/'~archive'
                     if root.is_relative_to(paths['output']) else root.parent/'~archive')
     sources = archive_duplicate_associations(root, staging_root, record, staged_batch_complete, archive_root,exclude=protected)
     if sources:
@@ -925,10 +924,10 @@ def archive_empty_relocated_folders(root: Path, source_folders: set[Path],
                                     staging_root: Path | None = None) -> None:
     """逐文件发布后，将已确认空的来源目录放入 ~archive。"""
     paths = load_paths()
-    archive_root = (paths['output'].parent / '~local' / '~archive'
+    archive_root = (paths['output'].parent / '~archive'
                     if root.is_relative_to(paths['output']) else root.parent / '~archive')
     total = 0
-    boundaries = (paths['output'], paths['staging'], paths['output'].parent / '~local')
+    boundaries = (paths['output'], paths['staging'])
     for source in sorted(source_folders, key=lambda path: len(path.parts), reverse=True):
         if not source.is_dir():
             continue
@@ -1575,25 +1574,15 @@ async def _fetch_resume_part(page: Page, source: dict, offset: int, limit: int) 
 
 
 def matching_existing_media(task: MediaTask, source: dict, canonical: Path,
-                            existing_index: dict[str, list[Path]]) -> tuple[list[Path], bool]:
-    """按媒体身份与附件位置筛选旧文件，识别独立复用区来源。"""
+                            existing_index: dict[str, list[Path]]) -> list[Path]:
+    """只从当前成品及暂存索引中按附件位置筛选已有文件。"""
     candidates = [path for path in existing_index.get(task.media_mid, []) if path.is_file()]
     if (source['kind'] == 'document' and canonical.suffix.lower() == '.txt'
             and canonical.is_file() and canonical not in candidates):
         # 普通消息文字同样是 TXT；只在服务器给出的完整媒体文件名完全匹配时复用。
         candidates.append(canonical)
-    if task.reuse_root and candidates:
-        for path in candidates:
-            if not path.is_relative_to(task.reuse_root):
-                continue
-            match = re.match(r'^(?:\d{4}-\d{2}-\d{2}[-_]m|m)\d+_[1-9]\d*_(?:(?:document|photo|video|audio|animation|sticker)_)?(\d+)(?:[_.]|$)',
-                             path.name)
-            if not match or match.group(1) != str(source['id']):
-                raise RuntimeError(f'复用区媒体 ID 与服务器不符，未移动：m{task.media_mid}')
-    from_reuse = bool(task.reuse_root and len(candidates) == 1 and
-                      candidates[0].is_relative_to(task.reuse_root))
     existing = [path for path in candidates
-                if media_file_position(path, task.media_mid) == task.index or from_reuse]
+                if media_file_position(path, task.media_mid) == task.index]
     if not existing and len(candidates) == 1:
         # 旧相册曾按单条消息保存为位置 1；媒体 ID 与服务器一致时可安全改名。
         marker = re.match(r'^(?:\d{4}-\d{2}-\d{2}_)?m\d+_\d+_(\d+)(?:_|\.)',
@@ -1602,7 +1591,7 @@ def matching_existing_media(task: MediaTask, source: dict, canonical: Path,
             existing = candidates
     if candidates and not existing:
         raise RuntimeError(f'同一消息的附件位置变化，无法确认版本：m{task.media_mid} 位置 {task.index}')
-    return existing, from_reuse
+    return existing
 
 
 async def save_one(page: Page, target, task: MediaTask,
@@ -1617,12 +1606,11 @@ async def save_one(page: Page, target, task: MediaTask,
     identity = {key: source[key] for key in ('peer', 'mid', 'kind', 'id', 'dc', 'thumb')}
     manifest = partial_root / f'{task.media_mid}.verified.jsonl'
     canonical = task.folder / canonical_media_name(task, source)
-    note_archive = (task.reuse_root.parent / '~archive' if task.reuse_root
-                    else partial_root / '~archive')
+    note_archive = task.archive_root or partial_root / '~archive'
     # TXT 原件与同名说明路径重合，先确认脚本所有权再归档，避免把说明当成原件。
     if canonical.suffix.lower() == '.txt':
         retire_failure_note(canonical, note_archive)
-    existing, from_reuse = matching_existing_media(task, source, canonical, existing_index)
+    existing = matching_existing_media(task, source, canonical, existing_index)
     version = 0
     async def resolve_existing_version():
         if len(existing) != 1:
@@ -1631,27 +1619,23 @@ async def save_one(page: Page, target, task: MediaTask,
         size = path.stat().st_size
         prior_version = media_version(path)
         expected = numbered_media_path(canonical, prior_version) if prior_version else canonical
-        if exact_verify and not from_reuse:
+        if exact_verify:
             if path != expected:
                 raise LocalDataError(f'已有媒体路径不符合规范：{path}；预期：{expected}')
             read_snapshot(manifest, strict=True, required=True)
-        # 旧复用区只提供已下载的媒体文件；不读取或搬运旧断点与状态。
-        prior_roots = [] if from_reuse else [partial_root]
-        prior = next((found for root_candidate in prior_roots
-                      if (found := saved_media_identity(root_candidate, task.media_mid,
-                                                        prior_version)) is not None), None)
+        prior = saved_media_identity(partial_root, task.media_mid, prior_version)
         changed = size != source['size'] or (prior_version > 0 and prior is None) or (prior is not None and
                   (prior['identity'] != identity or prior['size'] != source['size']))
-        if exact_verify and not from_reuse and changed:
+        if exact_verify and changed:
             raise LocalDataError(f'已有媒体大小或身份与服务器不符：m{task.media_mid}；{path}')
         if not changed:
             if size_changed:
                 raise RuntimeError(f'附件大小与扫描记录不符：m{task.media_mid}')
-            if exact_verify or from_reuse:
+            if exact_verify:
                 print(f'  [复核] {media_label(task.message, task.media_mid, task.position, task.total_files)}'
                       ' · 读取本地文件并核验 SHA-256', flush=True)
             digest = await asyncio.to_thread(verified_digest, path, identity, manifest,
-                                             sha256_file, exact=exact_verify or from_reuse)
+                                             sha256_file, exact=exact_verify)
             old_folder = None
             moved = numbered_media_path(canonical, prior_version) if prior_version else canonical
             if path != moved:
@@ -1937,11 +1921,8 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
                          dry_run: bool, on_group_open: Callable[[str], None] | None = None,
                          full_scan: bool = False, pause_at_oldest: bool = False,
                          exact_verify: bool = False,
-                         coarse_skip: bool = False,
-                         rebuild_local: bool = False, *, reviewed: bool = False) -> tuple[int, int, int, int]:
+                         coarse_skip: bool = False, *, reviewed: bool = False) -> tuple[int, int, int, int]:
     """单页流式处理：完整确认下一组后下载上一组，最多领先一组。"""
-    if rebuild_local:
-        raise ValueError('--rebuild-local 已停用；只允许从 ~local 逐个复用媒体文件')
     title = await open_group(page, url)
     if on_group_open:
         on_group_open(title)
@@ -1950,7 +1931,6 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
     paths = load_paths()
     staging_root = ((paths['staging'] if output.resolve() == paths['output'] else
                      output.resolve().parent / f'.{output.resolve().name}.telegg-staging') / root.name)
-    reuse_group = reuse_root(output, group_id(url))
     partial_base = (paths['partials'] if output.resolve() == paths['output'] else
                     output.resolve().parent / f'.{output.resolve().name}.telegg-partials')
     partial_root = partial_base / group_id(url)
@@ -1960,24 +1940,18 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
                              '（可加 --dry-run 预览），下载未启动')
     await asyncio.to_thread(validate_local_archive, root, staging_root, record, partial_root,
                             enabled=exact_verify and not reviewed)
-    if reuse_group.is_dir():
-        print('[复用] 正在核验旧文件与完整分片记录', flush=True)
-        rekeyed = await asyncio.to_thread(rekey_legacy_media, reuse_group,
-                                          reuse_group.parent, group_id(url))
-        if rekeyed:
-            print(f'[复用] {rekeyed} 个旧文件已逐块核验，等待服务器媒体 ID 再确认', flush=True)
     def current_media_index() -> dict[str, list[Path]]:
         known_text_media = set(record.media)
         index = existing_media_index(root, known_text_media=known_text_media)
         for mid, files in existing_media_index(staging_root, known_text_media=known_text_media).items():
             index.setdefault(mid, []).extend(files)
-        for mid, files in existing_media_index(reuse_group).items():
-            index.setdefault(mid, files)
         if coarse_skip:
             # 快速模式不检查旧文件缺失或额外；逐文件模式已由共用检查预先验收。
             for mid, value in record.results.items():
                 if value.get('status') in ('downloaded','skipped','relocated') and value.get('detail'):
-                    index[mid] = [Path(value['detail'])]
+                    path = Path(value['detail'])
+                    if path.is_relative_to(root) or path.is_relative_to(staging_root):
+                        index[mid] = [path]
         return index
 
     prior_messages = record.ordered_messages()
@@ -1995,7 +1969,6 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
         reconcile_reply_groups(staging_root, record)
     existing_index = {} if dry_run else current_media_index()
     server_mode = False
-    api_media = reuse_group.is_dir()
     prefix_count = prefix_files = 0
     endpoint = resume_endpoint(record, existing_index) if coarse_skip and not dry_run and not full_scan else None
     async def read_resume_prefix():
@@ -2170,7 +2143,7 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
                 record.invalidate_media(item.mid)
             if item.mid not in record.discovered:
                 discovered = (await discover_media_server(page, int(group_id(url)), item)
-                              if server_mode or api_media else await discover_media(page, url, item))
+                              if server_mode else await discover_media(page, url, item))
                 record.record_discovered(item.mid, discovered)
             media = newest_first_media(item, [found for found in record.media.values()
                                               if found.source_mid == item.mid])
@@ -2184,11 +2157,12 @@ async def download_group(page: Page, url: str, output: Path, limit: int | None,
             for media_number, found in enumerate(media, 1):
                 seen_media.add(found.media_mid)
                 task = MediaTask(item, found.index, found.media_mid, folder, found.expected_size,
-                                 partial_root, done_files + 1, total_files, reuse_group)
+                                 partial_root, done_files + 1, total_files,
+                                 archive_root=output.resolve().parent / '~archive')
                 try:
                     state, old_folder, download_page = await save_media_with_recovery(
                         page, download_page, url, task, existing_index,
-                        exact_verify=exact_verify, server_mode=server_mode or api_media)
+                        exact_verify=exact_verify, server_mode=server_mode)
                     if old_folder:
                         relocated_sources.add(old_folder)
                     if state == 'downloaded':

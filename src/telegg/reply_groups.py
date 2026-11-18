@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .layout import CHINA_TIME, Message, group_folder, grouped
-from .local_reuse import has_group_files, move_files_only
+from .file_moves import has_group_files, move_files_only
 from .scan_record import ScanRecord
 
 

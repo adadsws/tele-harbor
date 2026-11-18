@@ -14,7 +14,7 @@ from datetime import datetime
 
 
 def prepare_group_folder(root: Path, anchor: Message | None, *, create: bool = False) -> Path:
-    """准备头像段目录；旧标题目录只从复用区按媒体 ID 搬回。"""
+    """准备当前头像段目录，不从历史存储导入文件。"""
     if anchor is None:
         return root / '未归组'
     folder = root / group_folder(anchor)
@@ -26,7 +26,7 @@ def prepare_group_folder(root: Path, anchor: Message | None, *, create: bool = F
         raise RuntimeError(f'编组目录超出指定根目录：{root}')
     present = [old for old in olds if old.exists()]
     if present:
-        raise RuntimeError(f'旧目录不能整体迁移；请仅逐文件复用已下载媒体：{present}')
+        raise RuntimeError(f'旧目录不能整体迁移；请先核对当前目录布局：{present}')
     if create:
         folder.mkdir(parents=True, exist_ok=True)
     return folder

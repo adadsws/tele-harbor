@@ -1,7 +1,6 @@
-"""准备可重建的有界实测批次：仅复制登录资料和媒体，状态由实际 BAT 新建。"""
+"""准备有界实测批次：仅复制登录资料，媒体及状态由实际 BAT 新建。"""
 import argparse
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -28,10 +27,7 @@ def prepare(args):
     write_json(suite / 'source-before.json', before)
     runtime, profile = prepare_runtime(project, suite, paths['chrome_profile'])
     work = suite / 'baseline'
-    pool = work / '~local' / info['peer']
-    pool.mkdir(parents=True)
-    for original in info['files'].values():
-        shutil.copy2(original, pool / original.name)
+    work.mkdir(parents=True)
     configure(runtime, work, profile, info['peer'])
     result = run_bat(runtime, suite / 'logs/baseline.txt', info['peer'], 'fast', set(info['files']))
     console = result.pop('_console')
@@ -44,7 +40,7 @@ def prepare(args):
     result.update(files=len(info['files']), hash_matches=matches,
         source_unchanged=protected, network_download_started='[下载] 新资源已开始' in console)
     result['passed'] = (result['exit'] == 0 and matches == len(info['files']) and protected
-                        and not result['network_download_started'])
+                        and result['network_download_started'])
     write_json(suite / 'source-after.json', after)
     write_json(suite / 'prepare-result.json', result)
     print(json.dumps({'suite': str(suite), **result}), flush=True)

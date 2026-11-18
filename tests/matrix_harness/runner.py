@@ -18,7 +18,7 @@ from .execution import run_bat
 from .fixtures import build
 from .isolation import configure, copy_case, prepare_runtime, protected_state, sha, write_json, sync_code
 from .validation import evidence, validate
-from .history_window import install, configure_window
+from .history_window import install
 
 PROJECT = Path(__file__).resolve().parents[2]
 
@@ -62,7 +62,12 @@ def sample_batch(r, group, number, batch, max_mib, sample_kind):
         for part in item.parts:
             assert_live_test_allowed(group.identity, part[0])
     source = {mid: Path(r.results[mid]['detail']) for mid in ids}
-    sizes = {mid: p.stat().st_size for mid, p in source.items()}
+    if any(not p.is_file() or p.is_symlink() for p in source.values()):
+        return None
+    try:
+        sizes = {mid: p.stat().st_size for mid, p in source.items()}
+    except FileNotFoundError:
+        return None
     singles = {mid for item in batch if not item.album_id for mid, _ in item.content_types}
     large = [mid for mid, size in sizes.items() if size > 3 * 1024 * 1024
              and (sample_kind == 'latest' or mid in singles)]
@@ -93,7 +98,7 @@ def run_case(case, mode, suite, runtime, profile, baseline, info, references, la
     else:
         fact = {'continued_from_previous_mode': True}
     configure(runtime, work, profile, info['peer'])
-    configure_window(work, info)
+
     before = evidence(work)
     log = suite / 'logs' / ((label or f'{case.id}-{mode}') + '.txt')
     write_json(log.with_suffix('.before.json'), before)
@@ -182,7 +187,7 @@ def execute(args, chosen):
         else:
             baseline.mkdir()
             configure(runtime, baseline, profile, info['peer'])
-            configure_window(baseline, info)
+
             base_run = run_bat(runtime, suite / 'logs/baseline.txt', info['peer'], 'fast', set(references),
                                debug_window=args.debug_window, limit=info.get('limit', 1))
             base_result = validate(fresh, 'fast', baseline, info['peer'], references, base_run, {},

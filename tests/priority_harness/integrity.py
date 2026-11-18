@@ -34,14 +34,8 @@ def run(suite):
                 digest = hashlib.file_digest(media, 'sha256').hexdigest()
             passed = (digest == job['sha256'] and path.stat().st_size == job['size']
                       and before == job['stamp'] == stamp(path))
-            copies_ok = True
-            for candidate in job['old_copies']:
-                with Path(candidate).open('rb') as original:
-                    copies_ok &= hashlib.file_digest(original, 'sha256').hexdigest() == digest
-            passed &= copies_ok
             row = {'peer': job['peer'], 'mid': job['mid'], 'group': job['group'],
-                   'sha256': digest, 'size': job['size'], 'passed': passed,
-                   'old_copies_checked': len(job['old_copies'])}
+                   'sha256': digest, 'size': job['size'], 'passed': passed}
             stream.write(json.dumps(row) + '\n')
             stream.flush()
             if not passed:

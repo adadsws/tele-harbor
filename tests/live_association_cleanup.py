@@ -7,7 +7,7 @@ from pathlib import Path
 
 from live_test_policy import assert_live_test_allowed
 from matrix_harness.execution import run_bat
-from matrix_harness.history_window import configure_window, install
+from matrix_harness.history_window import install
 from matrix_harness.isolation import configure, copy_case, files, protected_state, sha, sync_code, write_json
 from matrix_harness.validation import evidence
 from telegg.local_config import CONFIG_FILE, load_paths
@@ -42,14 +42,14 @@ def audit(suite):
                 pending.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(final,pending)
                 if kind=='conflict':pending.write_bytes(b'{"replies":[]}')
                 if kind=='unknown_file':(pending.parent/'user-fixture.bin').write_bytes(b'keep')
-                configure(runtime,work,profile,peer);configure_window(work,info)
+                configure(runtime,work,profile,peer)
                 business_before=evidence(work);scan=next((work/'scans').glob('*.jsonl'));scan_hash=sha(scan)
                 final_hash=sha(final)
                 run=run_bat(runtime,batch/f'{kind}-{mode}.txt',peer,mode,set(references),limit=sample['limit'])
                 console=run.pop('_console');after=ScanRecord(scan)
                 intact=sum(Path(after.results.get(mid,{}).get('detail','')).is_file()
                            and sha(Path(after.results[mid]['detail']))==digest for mid,digest in reference_hashes.items())
-                archived=list((work/'~local/~archive').rglob('关联清单.json'))
+                archived=list((work/'~archive').rglob('关联清单.json'))
                 source_gone=not pending.parent.exists()
                 media_ok=intact==len(references) and sha(final)==final_hash
                 if kind=='duplicate':
@@ -57,7 +57,7 @@ def audit(suite):
                             and sha(archived[0])==final_hash)
                     repeat=run_bat(runtime,batch/f'{kind}-{mode}-repeat.txt',peer,mode,set(references),limit=sample['limit'])
                     repeat.pop('_console')
-                    passed=passed and repeat['exit']==0 and len(list((work/'~local/~archive').rglob('关联清单.json')))==1
+                    passed=passed and repeat['exit']==0 and len(list((work/'~archive').rglob('关联清单.json')))==1
                 elif kind=='conflict':
                     passed=(run['exit']==1 and '[本地数据错误]' in console
                             and business_before==evidence(work) and not archived and media_ok)

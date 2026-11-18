@@ -105,7 +105,7 @@ class MatrixHarnessTests(unittest.TestCase):
         async def original(page, peer, offset):
             calls.append((peer, offset))
             return ['real-response']
-        fake = SimpleNamespace(server_older_batch=original)
+        fake = SimpleNamespace(server_older_batch=original, save_media_server=object())
         namespace = {'PEER': -1, 'UPPER': (1 << 32) + 50}
         with patch.dict(sys.modules, {'telegg.browser': fake}), patch.object(telegg, 'browser', fake, create=True):
             exec(HOOK, namespace)
@@ -138,6 +138,18 @@ class MatrixHarnessTests(unittest.TestCase):
         self.assertEqual((info['upper'], info['limit']), (43, 3))
         self.assertEqual(info['contexts'], contexts)
         self.assertEqual(policy.call_count, 3)
+
+    def test_sample_skips_missing_completed_files_without_changing_record(self):
+        missing = Path(__file__).resolve().parents[1] / '~temp/tests' / uuid.uuid4().hex / 'missing.bin'
+        result = {'status': 'downloaded', 'detail': str(missing)}
+        record = SimpleNamespace(results={'42': result.copy()})
+        item = SimpleNamespace(mid='42', album_id='', content_types=(('42', 'video'),),
+                               parts=(('42', '', 1, True),))
+        with patch('matrix_harness.runner.assert_live_test_allowed'):
+            info = sample_batch(record, SimpleNamespace(identity='-1'), 1, [item], 8, 'standalone')
+        self.assertIsNone(info)
+        self.assertEqual(record.results['42'], result)
+        self.assertFalse(missing.parent.exists())
 
     def test_catalog_selection_is_explicit_and_unique(self):
         self.assertEqual(len(CASES), len({c.id for c in CASES}))
