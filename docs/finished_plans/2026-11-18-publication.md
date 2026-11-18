@@ -11,4 +11,4 @@
 - [x] 暂存检查发现 `tests/test_existing_media.py` 末尾多余空行；仅移除该空行，Python AST 不变，四项对应测试复跑通过。原始摘要和准确调整单独留证，源运行代码及本机配置未变。
 - [x] 功能提交 `36571b12dd8339b2c5327f14b6f2a22166ba3cae`，37 个文件变更；其完整公开历史 348 个 blob 及提交元数据审计无命中。普通快进推送后复读确认 HEAD 与唯一 main 分支均为该提交，无 tag 或意外 ref；源 Git HEAD、index 和本机配置保持不变。
 
-本次新增发布记录和遗留索引更正单独提交，同步后的最终远端 ref 由本机 `~outputs-intermediate/publication/20261118/result.json` 记录。本机机器证据均在同目录；本轮不扩展已完成的真实实测范围，不清理源仓库历史、旧缓存或隐私备份；既有未完成与未验证继续由 [唯一遗留索引](../plans/2026-11-08-remaining-verification.md) 维护。
+本次新增发布记录和遗留索引更正单独提交，同步后的最终远端 ref 由本机 `~outputs-intermediate/publication/20261118/result.json` 记录。本机机器证据均在同目录；本轮不扩展已完成的真实实测范围，不清理源仓库历史、旧缓存或隐私备份；既有未完成与未验证继续由 [唯一遗留索引](2026-11-08-remaining-verification.md) 维护。

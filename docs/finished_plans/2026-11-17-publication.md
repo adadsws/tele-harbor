@@ -21,4 +21,4 @@
 
 本次新增的发布记录和遗留索引更正单独提交，同步结果以本机 `~outputs-intermediate/publication/20261117/result.json` 为准。源码历史、分支和 index 不作清理或提交；功能公开发布成功不表示源仓库历史隐私已经修复。
 
-原始机器证据放在本机 `~outputs-intermediate/publication/20261117/`。此前自然新增、真实断电、整组哈希和隐私清除等未验证事项继续见 [遗留索引](../plans/2026-11-08-remaining-verification.md)，本次 push 不替代这些验收。
+原始机器证据放在本机 `~outputs-intermediate/publication/20261117/`。此前自然新增、真实断电、整组哈希和隐私清除等未验证事项继续见 [遗留索引](2026-11-08-remaining-verification.md)，本次 push 不替代这些验收。
